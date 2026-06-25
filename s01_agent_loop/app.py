@@ -84,6 +84,7 @@ def agent_loop(messages: list) -> None:
                 print(f"\033[33m$ {block.input['command']}\033[0m")
                 output = run_bash(block.input["command"])
                 print(output[:200])
+                print()
                 # tool_use_id 必须与请求一一对应，模型据此匹配结果
                 results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": output}
