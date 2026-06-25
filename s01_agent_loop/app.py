@@ -45,10 +45,10 @@ def run_bash(command: str) -> str:
     try:
         r = subprocess.run(
             command,  # 要执行的命令
-            shell=True,  # 通过系统 shell 解释命令(支持管道、通配符等)
+            shell=True,  # 通过系统 shell 解释命令（支持管道、通配符等）
             cwd=os.getcwd(),  # 指定这条命令在哪个目录下执行
             capture_output=True,  # 捕获 stdout 和 stderr
-            text=True,  # 以字符串(而非 bytes)返回输出
+            text=True,  # 以字符串（而非 bytes）返回输出
             timeout=120,  # 超时保护
         )
         out = (r.stdout + r.stderr).strip()
@@ -60,6 +60,7 @@ def run_bash(command: str) -> str:
 
 
 def agent_loop(messages: list) -> None:
+    # 反复“调用模型 → 执行工具 → 回填结果”，直到模型不再请求工具为止
     while True:
         response = client.messages.create(
             model=MODEL,
@@ -69,21 +70,26 @@ def agent_loop(messages: list) -> None:
             max_tokens=8000,
         )
 
+        # 把模型本轮回复（可能含文本和 tool_use 块）原样追加进历史
         messages.append({"role": "assistant", "content": response.content})
 
+        # 模型没有请求工具，说明本轮任务已给出最终回答，结束循环
         if response.stop_reason != "tool_use":
             return
 
+        # 执行模型请求的每个工具调用，收集结果
         results = []
         for block in response.content:
             if block.type == "tool_use":
                 print(f"\033[33m$ {block.input['command']}\033[0m")
                 output = run_bash(block.input["command"])
                 print(output[:200])
+                # tool_use_id 必须与请求一一对应，模型据此匹配结果
                 results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": output}
                 )
 
+        # 工具结果以 user 角色回填，进入下一轮让模型据此继续
         messages.append({"role": "user", "content": results})
 
 
@@ -108,7 +114,8 @@ def main() -> None:
         history_messages.append({"role": "user", "content": query})
         agent_loop(history_messages)
 
-        # 打印 LLM 最近一次输出
+        # 打印 LLM 最近一次输出（agent_loop 结束后，末尾必为 assistant 消息）
+        # content 为内容块列表时，只挑出文本块展示给用户（工具调用块已在循环中打印）
         response_content = history_messages[-1]["content"]
         if isinstance(response_content, list):
             for block in response_content:
