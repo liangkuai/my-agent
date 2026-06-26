@@ -37,7 +37,13 @@ client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 
 
 def run_bash(command: str) -> str:
-    # 检查高危命令
+    # 执行模型请求的 shell 命令，把结果（成功输出或错误信息）作为字符串返回。
+    # 返回值会原样回填给模型，因此无论成功还是失败都返回字符串、不向上抛异常，
+    # 让模型能读到错误并自行决定下一步，而不是让整个 REPL 崩溃。
+
+    # 仅作演示的极简防护：用子串黑名单挡掉几条最常见的破坏性命令。
+    # 注意这远不是真正的安全边界——诸如 `rm -rf ~`、多空格变体、`dd`、fork 炸弹等
+    # 都能轻易绕过。生产环境必须改用沙箱／容器隔离来执行不可信命令。
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
         return "Error: Dangerous command blocked"
@@ -49,13 +55,18 @@ def run_bash(command: str) -> str:
             cwd=os.getcwd(),  # 指定这条命令在哪个目录下执行
             capture_output=True,  # 捕获 stdout 和 stderr
             text=True,  # 以字符串（而非 bytes）返回输出
-            timeout=120,  # 超时保护
+            timeout=120,  # 超时保护：命令最多跑 120 秒，超时则抛 TimeoutExpired
         )
+        # 合并标准输出与标准错误：模型同样需要看到报错内容才能判断成败。
         out = (r.stdout + r.stderr).strip()
+        # 截断到 50000 字，避免超长输出撑爆上下文；空输出回一个占位符，
+        # 以免模型把空字符串误读成「调用失败」。
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
+        # 命令超时（如死循环、等待输入），返回提示而非让异常冒泡。
         return "Error: Timeout (120s)"
     except (FileNotFoundError, OSError) as e:
+        # 进程无法启动等系统级错误（例如 shell 不存在、资源不足）。
         return f"Error: {e}"
 
 
