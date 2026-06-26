@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 
-def run_bash(workdir: str, command: str) -> str:
+def run_bash(workdir: Path, command: str) -> str:
     # 执行模型请求的 shell 命令，把结果（成功输出或错误信息）作为字符串返回。
     # 返回值会原样回填给模型，因此无论成功还是失败都返回字符串、不向上抛异常，
     # 让模型能读到错误并自行决定下一步，而不是让整个 REPL 崩溃。
@@ -36,17 +36,22 @@ def run_bash(workdir: str, command: str) -> str:
         return f"Error: {e}"
 
 
-def safe_path(workdir: str, p: str) -> Path:
+def safe_path(workdir: Path, p: str) -> Path:
     # 把模型给的相对路径解析成绝对路径，并确保它仍落在工作目录内，防止目录穿越。
     # resolve() 会展开 `..` 和符号链接，所以像 `../../etc/passwd` 这类越权路径
     # 在这一步会暴露真实位置；随后用 is_relative_to 拦掉所有逃出 workdir 的路径。
+
+    # 先把 workdir 也 resolve 一次：is_relative_to 是纯字符串前缀比较，只有当两边
+    # 都是规范化的真实路径时结果才可靠。这样本函数作为安全边界就不再依赖调用方
+    # 「恰好传进来一个已 resolve 的目录」这一隐含前提。
+    workdir = Path(workdir).resolve()
     path = (workdir / p).resolve()
     if not path.is_relative_to(workdir):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
 
-def run_read(workdir: str, path: str, limit: int | None = None) -> str:
+def run_read(workdir: Path, path: str, limit: int | None = None) -> str:
     # 与 run_bash 同理：所有文件类工具都把异常转成 "Error: ..." 字符串返回给模型，
     # 而不是向上抛出——让模型读到错误并自行重试，避免单次工具失败拖垮整个循环。
     try:
@@ -60,7 +65,7 @@ def run_read(workdir: str, path: str, limit: int | None = None) -> str:
         return f"Error: {e}"
 
 
-def run_write(workdir: str, path: str, content: str) -> str:
+def run_write(workdir: Path, path: str, content: str) -> str:
     try:
         file_path = safe_path(workdir, path)
         # 自动补建缺失的父目录，这样模型写新文件时不必先手动创建目录。
@@ -71,7 +76,7 @@ def run_write(workdir: str, path: str, content: str) -> str:
         return f"Error: {e}"
 
 
-def run_edit(workdir: str, path: str, old_text: str, new_text: str) -> str:
+def run_edit(workdir: Path, path: str, old_text: str, new_text: str) -> str:
     try:
         file_path = safe_path(workdir, path)
         text = file_path.read_text()
@@ -86,7 +91,7 @@ def run_edit(workdir: str, path: str, old_text: str, new_text: str) -> str:
         return f"Error: {e}"
 
 
-def run_glob(workdir: str, pattern: str) -> str:
+def run_glob(workdir: Path, pattern: str) -> str:
     import glob as g
 
     try:

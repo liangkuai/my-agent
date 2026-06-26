@@ -20,8 +20,10 @@ from tool import TOOLS, TOOL_HANDLERS
 load_dotenv()
 
 # 初始化静态变量
-WORKDIR = Path.cwd()
-MODEL = os.environ["MODEL_ID"]
+# resolve() 得到规范化的绝对路径：safe_path 内部的 is_relative_to 越界判断
+# 依赖两边都是真实路径，这里先把根目录定死，工具层就有了可靠的安全边界。
+WORKDIR = Path.cwd().resolve()
+MODEL = os.getenv("MODEL_ID", "")
 SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks. Act, don't explain."
 
 # 初始化 LLM Client
@@ -73,7 +75,7 @@ def main() -> None:
     while True:
         # 获取输入
         try:
-            query = input("\033[36ms01 >> \033[0m")
+            query = input("\033[36ms02 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
