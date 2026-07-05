@@ -21,6 +21,8 @@ def run_bash(workdir: Path, command: str) -> str:
             cwd=workdir,  # 指定这条命令在哪个目录下执行
             capture_output=True,  # 捕获 stdout 和 stderr
             text=True,  # 以字符串（而非 bytes）返回输出
+            encoding="utf-8",
+            errors="replace", 
             timeout=120,  # 超时保护：命令最多跑 120 秒，超时则抛 TimeoutExpired
         )
         # 合并标准输出与标准错误：模型同样需要看到报错内容才能判断成败。
