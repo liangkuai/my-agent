@@ -78,6 +78,7 @@ def check_rules(tool_name: str, args: dict) -> str | None:
 
 # ── 用户确认 ────────────────────────────────────────────────────────
 
+
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
     """弹交互式确认提示，返回 "allow" 或 "deny"。
 
@@ -91,6 +92,7 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
 
 
 # ── 管道入口 ────────────────────────────────────────────────────────
+
 
 def check_permission(block: Any) -> bool:
     """权限管道主入口。

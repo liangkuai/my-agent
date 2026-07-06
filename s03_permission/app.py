@@ -68,9 +68,7 @@ def agent_loop(messages: list) -> None:
 
             print(f"\033[33m$ {block.name}\033[0m")
             handler = TOOL_HANDLERS.get(block.name)
-            output = (
-                handler(**block.input) if handler else f"Unknown: {block.name}"
-            )
+            output = handler(**block.input) if handler else f"Unknown: {block.name}"
             print(output[:200])
             print()
             # tool_use_id 必须与请求一一对应，模型据此匹配结果
