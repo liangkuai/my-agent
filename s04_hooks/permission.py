@@ -98,8 +98,8 @@ def check_permission(block: Any) -> str | None:
     参数 block 为 Anthropic SDK 返回的 tool_use 内容块，需要具备
     .name（str）和 .input（dict）两个属性。
 
-    返回 True 表示允许执行，False 表示拒绝（调用方应回填
-    "Permission denied." 结果给模型）。
+    返回 None 表示放行，非 None 字符串表示拒绝原因（由 hooks 层直接作为
+    tool_result 回填给模型，模型可据此调整策略）。
     """
     # 第一层：拒绝列表 —— bash 专属，直接拒绝
     if block.name == "bash":

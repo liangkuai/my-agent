@@ -102,14 +102,14 @@ def large_output_hook(block: Any, output: str) -> str | None:
     超大输出可能撑爆模型上下文窗口，黄色告警提醒用户关注。
     始终返回 None，不拦截（输出已产生，告警只是提示）。
     """
-    if len(str(output)) > 100000:
+    if len(output) > 100000:
         print(
-            f"\033[33m[HOOK] ⚠ Large output from {block.name}: {len(str(output))} chars\033[0m"
+            f"\033[33m[HOOK] ⚠ Large output from {block.name}: {len(output)} chars\033[0m"
         )
     return None
 
 
-def summary_hook(messages: list):
+def summary_hook(messages: list) -> None:
     """Stop —— 对话循环结束后统计本次会话中执行过的工具调用总数。
 
     遍历完整对话历史的 tool_result 块计数，不包含被拦截未执行的调用。

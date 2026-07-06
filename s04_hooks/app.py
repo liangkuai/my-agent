@@ -47,7 +47,9 @@ def agent_loop(messages: list) -> None:
 
         # 模型没有请求工具，说明本轮任务已给出最终回答，结束循环
         if response.stop_reason != "tool_use":
-            # hooks 一轮对话循环即将退出时
+            # Stop hook 在循环退出前触发，返回非 None 时可注入一条 user 消息
+            # 并 continue 继续循环，让模型基于该消息再产生回复。
+            # 典型场景：自动追问（"需要我继续吗？"）、会话摘要注入等。
             force = trigger_hooks("Stop", messages)
             if force:
                 messages.append({"role": "user", "content": force})
