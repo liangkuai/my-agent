@@ -9,13 +9,6 @@ def run_bash(command: str) -> str:
     # 返回值会原样回填给模型，因此无论成功还是失败都返回字符串、不向上抛异常，
     # 让模型能读到错误并自行决定下一步，而不是让整个 REPL 崩溃。
 
-    # 仅作演示的极简防护：用子串黑名单挡掉几条最常见的破坏性命令。
-    # 注意这远不是真正的安全边界——诸如 `rm -rf ~`、多空格变体、`dd`、fork 炸弹等
-    # 都能轻易绕过。生产环境必须改用沙箱／容器隔离来执行不可信命令。
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
-    if any(d in command for d in dangerous):
-        return "Error: Dangerous command blocked"
-
     try:
         r = subprocess.run(
             command,  # 要执行的命令
@@ -50,7 +43,7 @@ def safe_path(p: str) -> Path:
     # 「恰好传进来一个已 resolve 的目录」这一隐含前提。
     workdir = Path(WORKDIR).resolve()
     path = (workdir / p).resolve()
-    if not path.is_relative_to(WORKDIR):
+    if not path.is_relative_to(workdir):
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
