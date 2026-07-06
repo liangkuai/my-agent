@@ -15,7 +15,7 @@ except ImportError:
 
 from constant import WORKDIR
 from tool import TOOLS, TOOL_HANDLERS
-from permission import check_permission
+from hooks import trigger_hooks
 
 
 # 加载配置
@@ -47,6 +47,11 @@ def agent_loop(messages: list) -> None:
 
         # 模型没有请求工具，说明本轮任务已给出最终回答，结束循环
         if response.stop_reason != "tool_use":
+            # hooks 一轮对话循环即将退出时
+            force = trigger_hooks("Stop", messages)
+            if force:
+                messages.append({"role": "user", "content": force})
+                continue
             return
 
         # 执行模型请求的每个工具调用，收集结果
@@ -55,24 +60,25 @@ def agent_loop(messages: list) -> None:
             if block.type != "tool_use":
                 continue
 
-            # 执行前运行权限管道
-            if not check_permission(block):
+            # hooks 工具执行前
+            blocked = trigger_hooks("PreToolUse", block)
+            if blocked:
                 results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": block.id,
-                        "content": "Permission denied.",
+                        "content": str(blocked),
                     }
                 )
                 continue
-
-            print(f"\033[33m$ {block.name}\033[0m")
+            # print(f"\033[33m$ {block.name}\033[0m")
             handler = TOOL_HANDLERS.get(block.name)
-            output = (
-                handler(**block.input) if handler else f"Unknown: {block.name}"
-            )
-            print(output[:200])
-            print()
+            output = handler(**block.input) if handler else f"Unknown: {block.name}"
+            # print(output[:200])
+            # print()
+            # hooks 工具执行后
+            trigger_hooks("PostToolUse", block, output)  # s04: post hook
+
             # tool_use_id 必须与请求一一对应，模型据此匹配结果
             results.append(
                 {"type": "tool_result", "tool_use_id": block.id, "content": output}
@@ -83,7 +89,7 @@ def agent_loop(messages: list) -> None:
 
 
 def main() -> None:
-    print("s03: Permission")
+    print("s04: Hooks")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
@@ -91,9 +97,12 @@ def main() -> None:
     while True:
         # 获取输入
         try:
-            query = input("\033[36ms03 >> \033[0m")
+            query = input("\033[36ms04 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
+
+        # hooks 用户输入提交后、进入 LLM 前
+        trigger_hooks("UserPromptSubmit", query)
 
         # 校验输入
         if query.strip().lower() in ("q", "exit", "quit", ""):

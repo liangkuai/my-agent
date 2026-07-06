@@ -92,7 +92,7 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
 
 # ── 管道入口 ────────────────────────────────────────────────────────
 
-def check_permission(block: Any) -> bool:
+def check_permission(block: Any) -> str | None:
     """权限管道主入口。
 
     参数 block 为 Anthropic SDK 返回的 tool_use 内容块，需要具备
@@ -105,15 +105,15 @@ def check_permission(block: Any) -> bool:
     if block.name == "bash":
         reason = check_deny_list(block.input.get("command", ""))
         if reason:
-            print(f"\n\033[31m⛔ {reason}\033[0m")
-            return False
+            print(f"\033[31m⛔ {reason}\033[0m")
+            return "Permission denied by deny list"
 
     # 第二层：规则检查 —— 命中后进入用户交互确认
     reason = check_rules(block.name, block.input)
     if reason:
         decision = ask_user(block.name, block.input, reason)
         if decision == "deny":
-            return False
+            return "Permission denied by user"
 
     # 第三层：放行
-    return True
+    return None
