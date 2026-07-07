@@ -1,6 +1,5 @@
 import subprocess, json, ast
 from pathlib import Path
-from xxlimited import Str
 
 from constant import WORKDIR
 
@@ -104,15 +103,23 @@ def run_glob(pattern: str) -> str:
         return f"Error: {e}"
 
 
+# 当前会话的任务列表，是 agent_loop 生命周期内的唯一状态。
+# run_todo_write 负责更新，agent_loop 在 todo_write 调用后重置提醒计数器。
 CURRENT_TODOS: list[dict] = []
 
 
-def run_todo_write(todos: list) -> str:
+def run_todo_write(todos: list[dict] | str) -> str:
+    """接收模型传来的任务列表，校验、记录状态，并打印彩色任务面板到终端。
+
+    严格顺序：先校验 → 失败则把错误信息返回给模型让它自行修正；
+    校验通过后再更新全局状态，避免写进脏数据。
+    """
     global CURRENT_TODOS
     todos, error = _normalize_todos(todos)
     if error:
         return error
     CURRENT_TODOS = todos
+    # 用 ANSI 转义码渲染彩色任务面板：黄色标题、青色进行中箭头、绿色勾
     lines = ["\n\033[33m## Current Tasks\033[0m"]
     for t in CURRENT_TODOS:
         icon = {
@@ -125,15 +132,29 @@ def run_todo_write(todos: list) -> str:
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 
-def _normalize_todos(todos: list) -> tuple[list, None] | tuple[None, str]:
+def _normalize_todos(todos: list[dict] | str) -> tuple[list[dict], None] | tuple[None, str]:
+    """将模型输入规范化成合法的 todo 列表，返回 (结果, 错误) 二选一的元组。
+
+    模型可能传入已解析的 list[dict]，也可能传入 JSON 字符串（甚至 Python
+    风格的单引号字面量）。json.loads 先试，失败后用 ast.literal_eval 兜底，
+    兼顾 LLM 输出的各种格式漂移。
+
+    Returns:
+        (todos, None)  — 校验通过，todos 为 list[dict]
+        (None, error)  — 校验失败，error 为可直接返回给模型的错误描述
+    """
+    # 模型偶尔输出未解析的 JSON/Python 字面量字符串，先尝试反序列化
     if isinstance(todos, str):
         try:
             todos = json.loads(todos)
         except json.JSONDecodeError:
             try:
+                # ast.literal_eval 比 json.loads 更宽松，能处理单引号、
+                # None/True/False 等 Python 原生写法
                 todos = ast.literal_eval(todos)
             except (SyntaxError, ValueError):
                 return None, "Error: todos must be a list or JSON array string"
+    # 类型 + 结构校验，逐层确保数据形状符合预期
     if not isinstance(todos, list):
         return None, "Error: todos must be a list"
     for i, t in enumerate(todos):

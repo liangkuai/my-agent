@@ -35,13 +35,21 @@ SYSTEM = (
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 
 
+# 自上次 todo_write 调用以来已完成的 round 数。
+# agent_loop 每轮 +1；todo_write 调用时清零。达到阈值时向模型注入提醒，
+# 防止模型长时间不更新任务列表（例如沉浸在一连串 bash/read 调用中）。
 rounds_since_todo = 0
 
 
 def agent_loop(messages: list) -> None:
+    """反复「调用模型 → 执行工具 → 回填结果」，直到模型不再请求工具为止。
+
+    每轮检查是否需要注入 todo 提醒；退出前触发 Stop hook，允许外部注入
+    追问消息并继续循环。
+    """
     global rounds_since_todo
-    # 反复“调用模型 → 执行工具 → 回填结果”，直到模型不再请求工具为止
     while True:
+        # 连续 N 轮未调用 todo_write 时，注入一条系统提醒催促模型更新任务列表
         if rounds_since_todo >= 3 and messages:
             messages.append(
                 {"role": "user", "content": "<reminder>Update your todos.</reminder>"}
@@ -70,6 +78,9 @@ def agent_loop(messages: list) -> None:
                 continue
             return
 
+        # 每轮 rounds_since_todo += 1（追踪未调用 todo_write 的连续轮次）
+        rounds_since_todo += 1
+
         # 执行模型请求的每个工具调用，收集结果
         results = []
         for block in response.content:
@@ -95,6 +106,7 @@ def agent_loop(messages: list) -> None:
             # hooks 工具执行后
             trigger_hooks("PostToolUse", block, output)  # s05: post hook
 
+            # 模型主动调用了 todo_write，重置提醒计数器，避免重复注入
             if block.name == "todo_write":
                 rounds_since_todo = 0
 
@@ -108,31 +120,30 @@ def agent_loop(messages: list) -> None:
 
 
 def main() -> None:
+    """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
     print("s05: Todo Write")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
 
     while True:
-        # 获取输入
         try:
             query = input("\033[36ms05 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
-        # 校验输入
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # hooks 用户输入提交后、进入 LLM 前
+        # 通知 hooks 用户已提交输入（s05: 会话记录等）
         trigger_hooks("UserPromptSubmit", query)
 
-        # 追加输入
         history_messages.append({"role": "user", "content": query})
         agent_loop(history_messages)
 
-        # 打印 LLM 最近一次输出（agent_loop 结束后，末尾必为 assistant 消息）
-        # content 为内容块列表时，只挑出文本块展示给用户（工具调用块已在循环中打印）
+        # agent_loop 结束后，末尾必为 assistant 消息。
+        # content 为内容块列表时只挑文本块展示（工具调用块由 run_todo_write 等函数
+        # 内置的 print 在终端直接渲染）。
         response_content = history_messages[-1]["content"]
         if isinstance(response_content, list):
             for block in response_content:
