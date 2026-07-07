@@ -25,15 +25,29 @@ load_dotenv()
 # resolve() 得到规范化的绝对路径：safe_path 内部的 is_relative_to 越界判断
 # 依赖两边都是真实路径，这里先把根目录定死，工具层就有了可靠的安全边界。
 MODEL = os.getenv("MODEL_ID", "")
-SYSTEM = f"You are a coding agent at {WORKDIR}. All destructive operations require user approval."
+SYSTEM = (
+    f"You are a coding agent at {WORKDIR}. "
+    "Before starting any multi-step task, use todo_write to plan your steps. "
+    "Update status as you go."
+)
 
 # 初始化 LLM Client
 client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 
 
+rounds_since_todo = 0
+
+
 def agent_loop(messages: list) -> None:
+    global rounds_since_todo
     # 反复“调用模型 → 执行工具 → 回填结果”，直到模型不再请求工具为止
     while True:
+        if rounds_since_todo >= 3 and messages:
+            messages.append(
+                {"role": "user", "content": "<reminder>Update your todos.</reminder>"}
+            )
+            rounds_since_todo = 0
+
         response = client.messages.create(
             model=MODEL,
             system=SYSTEM,
@@ -79,7 +93,10 @@ def agent_loop(messages: list) -> None:
             # print(output[:200])
             # print()
             # hooks 工具执行后
-            trigger_hooks("PostToolUse", block, output)  # s04: post hook
+            trigger_hooks("PostToolUse", block, output)  # s05: post hook
+
+            if block.name == "todo_write":
+                rounds_since_todo = 0
 
             # tool_use_id 必须与请求一一对应，模型据此匹配结果
             results.append(
@@ -91,7 +108,7 @@ def agent_loop(messages: list) -> None:
 
 
 def main() -> None:
-    print("s04: Hooks")
+    print("s05: Todo Write")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
@@ -99,16 +116,16 @@ def main() -> None:
     while True:
         # 获取输入
         try:
-            query = input("\033[36ms04 >> \033[0m")
+            query = input("\033[36ms05 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
-
-        # hooks 用户输入提交后、进入 LLM 前
-        trigger_hooks("UserPromptSubmit", query)
 
         # 校验输入
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
+
+        # hooks 用户输入提交后、进入 LLM 前
+        trigger_hooks("UserPromptSubmit", query)
 
         # 追加输入
         history_messages.append({"role": "user", "content": query})

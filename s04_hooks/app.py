@@ -103,12 +103,12 @@ def main() -> None:
         except (EOFError, KeyboardInterrupt):
             break
 
-        # hooks 用户输入提交后、进入 LLM 前
-        trigger_hooks("UserPromptSubmit", query)
-
         # 校验输入
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
+
+       # hooks 用户输入提交后、进入 LLM 前
+        trigger_hooks("UserPromptSubmit", query)
 
         # 追加输入
         history_messages.append({"role": "user", "content": query})
