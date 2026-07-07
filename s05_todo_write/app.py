@@ -78,7 +78,8 @@ def agent_loop(messages: list) -> None:
                 continue
             return
 
-        # 每轮 rounds_since_todo += 1（追踪未调用 todo_write 的连续轮次）
+        # 仅在 tool_use 轮次递增计数器。文本回复轮次（模型给出最终答案）
+        # 不需要提醒——提醒只针对模型陷入一连串工具调用却忘记更新任务列表的场景。
         rounds_since_todo += 1
 
         # 执行模型请求的每个工具调用，收集结果

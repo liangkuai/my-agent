@@ -1,4 +1,6 @@
-import subprocess, json, ast
+import subprocess
+import json
+import ast
 from pathlib import Path
 
 from constant import WORKDIR
@@ -115,10 +117,13 @@ def run_todo_write(todos: list[dict] | str) -> str:
     校验通过后再更新全局状态，避免写进脏数据。
     """
     global CURRENT_TODOS
-    todos, error = _normalize_todos(todos)
+    normalized_todos, error = _normalize_todos(todos)
     if error:
         return error
-    CURRENT_TODOS = todos
+    # error 为 None ⇒ 解构出的 normalized 必为 list，但类型检查器无法自动
+    # 缩窄联合元组的双向依赖，这里显式断言帮助缩窄。
+    assert normalized_todos is not None
+    CURRENT_TODOS = normalized_todos
     # 用 ANSI 转义码渲染彩色任务面板：黄色标题、青色进行中箭头、绿色勾
     lines = ["\n\033[33m## Current Tasks\033[0m"]
     for t in CURRENT_TODOS:
@@ -132,7 +137,9 @@ def run_todo_write(todos: list[dict] | str) -> str:
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 
-def _normalize_todos(todos: list[dict] | str) -> tuple[list[dict], None] | tuple[None, str]:
+# 返回类型用 list 而非 list[dict]：json.loads / ast.literal_eval 返回 Any，
+# 类型检查器无法证明元素为 dict——但下方的逐元素 isinstance 校验在运行时保证了这一点。
+def _normalize_todos(todos: list[dict] | str) -> tuple[list, None] | tuple[None, str]:
     """将模型输入规范化成合法的 todo 列表，返回 (结果, 错误) 二选一的元组。
 
     模型可能传入已解析的 list[dict]，也可能传入 JSON 字符串（甚至 Python
