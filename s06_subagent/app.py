@@ -1,7 +1,4 @@
 import os
-from dotenv import load_dotenv
-from anthropic import Anthropic
-
 try:
     import readline
 
@@ -13,26 +10,11 @@ try:
 except ImportError:
     pass
 
-from constant import WORKDIR
+import config
+from constant import MODEL, SYSTEM
+from llm_client import client
 from tool import TOOLS, TOOL_HANDLERS
 from hooks import trigger_hooks
-
-
-# 加载配置
-load_dotenv()
-
-# 初始化静态变量
-# resolve() 得到规范化的绝对路径：safe_path 内部的 is_relative_to 越界判断
-# 依赖两边都是真实路径，这里先把根目录定死，工具层就有了可靠的安全边界。
-MODEL = os.getenv("MODEL_ID", "")
-SYSTEM = (
-    f"You are a coding agent at {WORKDIR}. "
-    "Before starting any multi-step task, use todo_write to plan your steps. "
-    "Update status as you go."
-)
-
-# 初始化 LLM Client
-client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 
 
 # 自上次 todo_write 调用以来已完成的 round 数。
@@ -105,7 +87,7 @@ def agent_loop(messages: list) -> None:
             # print(output[:200])
             # print()
             # hooks 工具执行后
-            trigger_hooks("PostToolUse", block, output)  # s05: post hook
+            trigger_hooks("PostToolUse", block, output)
 
             # 模型主动调用了 todo_write，重置提醒计数器，避免重复注入
             if block.name == "todo_write":
@@ -122,21 +104,21 @@ def agent_loop(messages: list) -> None:
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s05: Todo Write")
+    print("s06: Subagent")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
 
     while True:
         try:
-            query = input("\033[36ms05 >> \033[0m")
+            query = input("\033[36ms06 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s05: 会话记录等）
+        # 通知 hooks 用户已提交输入（s06: 会话记录等）
         trigger_hooks("UserPromptSubmit", query)
 
         history_messages.append({"role": "user", "content": query})
