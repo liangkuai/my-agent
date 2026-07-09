@@ -1,3 +1,18 @@
+"""
+Agent 可用的工具函数注册表。
+
+本模块定义了主 agent 和子 agent 共用的全部工具：shell 执行、文件读写、
+编辑、glob 搜索、todo 管理，以及子 agent 的 spawn 与工具回填循环。
+
+核心设计原则：
+1. 所有工具函数都不抛异常——错误以 "Error: ..." 字符串返回给模型，
+   让模型自行消化和重试，避免单次工具失败拖垮整个 agent 循环。
+2. 路径安全：safe_path() 是所有文件类工具的统一入口，通过 resolve + is_relative_to
+   双重校验防止目录穿越。
+3. 主/子 agent 共享 handler（run_bash / run_read / run_write / run_edit / run_glob），
+   但工具声明分开——主 agent 额外拥有 todo_write 和 task（子 agent spawn）。
+"""
+
 import subprocess
 import json
 import ast
@@ -53,8 +68,11 @@ def safe_path(p: str) -> Path:
 
 
 def run_read(path: str, limit: int | None = None) -> str:
-    # 与 run_bash 同理：所有文件类工具都把异常转成 "Error: ..." 字符串返回给模型，
-    # 而不是向上抛出——让模型读到错误并自行重试，避免单次工具失败拖垮整个循环。
+    """读取文件内容，可选截断到前 limit 行。
+
+    与 run_bash 同理：所有文件类工具都把异常转成 "Error: ..." 字符串返回给模型，
+    而不是向上抛出——让模型读到错误并自行重试，避免单次工具失败拖垮整个循环。
+    """
     try:
         lines = safe_path(path).read_text().splitlines()
         # 只读前 limit 行时，补一行 "... (N more lines)" 提示，免得模型把截断
@@ -67,6 +85,7 @@ def run_read(path: str, limit: int | None = None) -> str:
 
 
 def run_write(path: str, content: str) -> str:
+    """写入内容到文件，自动创建缺失的父目录。"""
     try:
         file_path = safe_path(path)
         # 自动补建缺失的父目录，这样模型写新文件时不必先手动创建目录。
@@ -78,14 +97,17 @@ def run_write(path: str, content: str) -> str:
 
 
 def run_edit(path: str, old_text: str, new_text: str) -> str:
+    """精确替换文件中的一段文本（仅替换首次出现）。
+
+    若 old_text 在文件中不存在则报错，避免静默地什么都没改、却让模型以为成功了。
+    若 old_text 多次出现，每次调用只替换一处，更可控也避免误伤。
+    """
     try:
         file_path = safe_path(path)
         text = file_path.read_text()
-        # 找不到待替换文本就报错，避免静默地什么都没改、却让模型以为成功了。
         if old_text not in text:
             return f"Error: text not found in {path}"
-        # replace 的第三个参数 1 表示只替换第一处：若 old_text 在文件中多次出现，
-        # 一次只改一处更可控，也避免误伤其他同名片段。
+        # count=1：只替换首次出现，单次调用不会意外波及多处同名文本。
         file_path.write_text(text.replace(old_text, new_text, 1))
         return f"Edited {path}"
     except Exception as e:
@@ -93,6 +115,10 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 
 
 def run_glob(pattern: str) -> str:
+    """在 WORKDIR 下按 glob 模式搜索文件，返回匹配的相对路径列表。
+
+    搜索范围限定在 WORKDIR 内；结果会二次校验确保没有路径逃逸。
+    """
     import glob as g
 
     try:
@@ -107,8 +133,9 @@ def run_glob(pattern: str) -> str:
         return f"Error: {e}"
 
 
-# 当前会话的任务列表，是 agent_loop 生命周期内的唯一状态。
-# run_todo_write 负责更新，agent_loop 在 todo_write 调用后重置提醒计数器。
+# === 任务管理 ===
+# CURRENT_TODOS 是 agent_loop 生命周期内唯一的可变会话状态。
+# run_todo_write 负责更新，agent_loop 在每次 todo_write 调用后重置未使用工具提醒计数器。
 CURRENT_TODOS: list[dict] = []
 
 
@@ -177,9 +204,30 @@ def _normalize_todos(todos: list[dict] | str) -> tuple[list, None] | tuple[None,
 
 
 def spawn_subagent(description: str) -> str:
+    """启动子 agent 独立完成一项复杂子任务，只返回最终结论。
+
+    子 agent 在一个清新的上下文中运行（只保留 description 作为首条 user 消息），
+    拥有独立的工具集 SUB_TOOLS（bash/read/write/edit/glob，不含 todo_write 和 task）。
+    通过 client 直接驱动工具调用循环，而不是让上层 agent_loop 统一调度——
+    这样主 agent 调用 task 工具后只需等待最终结果，不必参与子 agent 的每一步推理。
+
+    循环机制：
+    1. 将 description 作为首条 user 消息发送给模型。
+    2. 若模型返回 tool_use，逐一执行工具并将结果以 tool_result 回填。
+    3. 工具执行前后触发 PreToolUse / PostToolUse hooks，支持拦截和审计。
+    4. 若 stop_reason 不再是 tool_use（即模型给出最终文本回复），循环结束。
+    5. 最多 30 轮；超限后从最近一条 assistant 消息中提取文本结果返回。
+
+    Args:
+        description: 描述子任务的纯文本，作为子 agent 的初始 user 消息。
+
+    Returns:
+        子 agent 的最终文本回复；若 30 轮后无文本输出则返回提示信息。
+    """
     print(f"\n\033[35m[Subagent spawned]\033[0m")
 
-    messages = [{"role": "user", "content": description}]  # fresh context
+    # 子 agent 使用全新上下文，不继承主 agent 的对话历史。
+    messages = [{"role": "user", "content": description}]
     for _ in range(30):
         response = client.messages.create(
             model=MODEL,
@@ -188,12 +236,19 @@ def spawn_subagent(description: str) -> str:
             tools=SUB_TOOLS,
             max_tokens=8000,
         )
+        # 将 assistant 回复追加到消息历史。
         messages.append({"role": "assistant", "content": response.content})
+
+        # 非 tool_use 的 stop_reason（end_turn / stop_sequence / max_tokens）
+        # 表示模型已经给出最终回复，循环结束。
         if response.stop_reason != "tool_use":
             break
+
+        # 遍历 assistant 回复中的 tool_use 块，逐一执行并收集结果。
         results = []
         for block in response.content:
             if block.type == "tool_use":
+                # PreToolUse hook：允许外部拦截（如权限控制），返回非空则跳过执行。
                 blocked = trigger_hooks("PreToolUse", block)
                 if blocked:
                     results.append(
@@ -204,16 +259,26 @@ def spawn_subagent(description: str) -> str:
                         }
                     )
                     continue
+
+                # 从 SUB_TOOL_HANDLERS 查找 handler 并执行。
                 handler = SUB_TOOL_HANDLERS.get(block.name)
                 output = handler(**block.input) if handler else f"Unknown: {block.name}"
+
+                # PostToolUse hook：审计、日志等后置处理。
                 trigger_hooks("PostToolUse", block, output)
                 print(f"  \033[90m[sub] {block.name}: {str(output)[:100]}\033[0m")
                 results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": output}
                 )
+
+        # 将本轮的 tool_result 列表作为一条 user 消息追加。
         messages.append({"role": "user", "content": results})
+
+    # 从最后一条消息中提取文本结果。
     result = extract_text(messages[-1]["content"])
     if not result:
+        # 最后一条可能仍是 tool_use 消息（30 轮耗尽），向前查找最后一条
+        # assistant 消息中的文本内容。
         for msg in reversed(messages):
             if msg["role"] == "assistant":
                 result = extract_text(msg["content"])
@@ -226,12 +291,25 @@ def spawn_subagent(description: str) -> str:
 
 
 def extract_text(content) -> str:
+    """从 API 返回的 content 中提取纯文本。
+
+    API 的 content 字段是 ContentBlock 列表（可能混合 text / tool_use / tool_result），
+    本函数过滤出 type == "text" 的块并拼接，用于获取模型最终的文本回复。
+    若 content 本身已是字符串则原样返回。
+    """
     if not isinstance(content, list):
         return str(content)
     return "\n".join(
         getattr(b, "text", "") for b in content if getattr(b, "type", None) == "text"
     )
 
+
+# =============================================================================
+#  工具定义：声明每个工具的名称、描述和参数 schema（Anthropic Tool Use 格式）。
+#  TOOLS        → 提供给主 agent，包含全部 7 个工具。
+#  SUB_TOOLS    → 提供给子 agent，仅含 5 个基础文件/shell 工具（不含 todo_write 和 task）。
+#  TOOL_HANDLERS / SUB_TOOL_HANDLERS → 把工具名映射到对应的 Python 函数。
+# =============================================================================
 
 TOOLS = [
     {
@@ -319,6 +397,7 @@ TOOLS = [
 ]
 
 
+# 主 agent 的工具处理函数映射：工具名 → 实现函数。
 TOOL_HANDLERS = {
     "bash": run_bash,
     "read_file": run_read,
@@ -330,6 +409,7 @@ TOOL_HANDLERS = {
 }
 
 
+# 子 agent 的工具定义：不含 todo_write（子 agent 不需要自己的 todo）和 task（防止无限嵌套）。
 SUB_TOOLS = [
     {
         "name": "bash",
@@ -383,6 +463,8 @@ SUB_TOOLS = [
 ]
 
 
+# 子 agent 的工具处理函数映射：与主 agent 共享同一组 handler 实现，
+# 但只映射子 agent 实际拥有的 5 个基础工具。
 SUB_TOOL_HANDLERS = {
     "bash": run_bash,
     "read_file": run_read,
