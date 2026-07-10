@@ -10,7 +10,8 @@ except ImportError:
     pass
 
 import config
-from constant import MODEL, SYSTEM
+from constant import WORKDIR, MODEL
+from skills import list_skills
 from llm_client import client
 from tool import TOOLS, TOOL_HANDLERS
 from hooks import trigger_hooks
@@ -20,6 +21,18 @@ from hooks import trigger_hooks
 # agent_loop 每轮 +1；todo_write 调用时清零。达到阈值时向模型注入提醒，
 # 防止模型长时间不更新任务列表（例如沉浸在一连串 bash/read 调用中）。
 rounds_since_todo = 0
+
+
+def build_system() -> str:
+    catalog = list_skills()
+    return (
+        f"You are a coding agent at {WORKDIR}. "
+        f"Skills available:\n{catalog}\n"
+        "Use load_skill to get full details when needed."
+    )
+
+
+SYSTEM = build_system()
 
 
 def agent_loop(messages: list) -> None:
@@ -103,21 +116,21 @@ def agent_loop(messages: list) -> None:
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s06: Subagent")
+    print("s07: Skill Loading")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
 
     while True:
         try:
-            query = input("\033[36ms06 >> \033[0m")
+            query = input("\033[36ms07 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s06: 会话记录等）
+        # 通知 hooks 用户已提交输入（s07: 会话记录等）
         trigger_hooks("UserPromptSubmit", query)
 
         history_messages.append({"role": "user", "content": query})

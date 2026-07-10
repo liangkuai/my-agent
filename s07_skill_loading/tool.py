@@ -19,6 +19,7 @@ import ast
 from pathlib import Path
 
 from constant import WORKDIR, MODEL, SUB_SYSTEM
+from skills import SKILL_REGISTRY
 from llm_client import client
 from hooks import trigger_hooks
 
@@ -304,6 +305,13 @@ def extract_text(content) -> str:
     )
 
 
+def load_skill(name: str) -> str:
+    skill = SKILL_REGISTRY.get(name)
+    if not skill:
+        return f"Skill not found: {name}"
+    return skill["content"]
+
+
 # =============================================================================
 #  工具定义：声明每个工具的名称、描述和参数 schema（Anthropic Tool Use 格式）。
 #  TOOLS        → 提供给主 agent，包含全部 7 个工具。
@@ -394,6 +402,15 @@ TOOLS = [
             "required": ["description"],
         },
     },
+    {
+        "name": "load_skill",
+        "description": "Load the full content of a skill by name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -406,6 +423,7 @@ TOOL_HANDLERS = {
     "glob": run_glob,
     "todo_write": run_todo_write,
     "task": spawn_subagent,
+    "load_skill": load_skill,
 }
 
 
