@@ -25,42 +25,49 @@ from hooks import trigger_hooks
 
 
 def run_bash(command: str) -> str:
-    # 执行模型请求的 shell 命令，把结果（成功输出或错误信息）作为字符串返回。
-    # 返回值会原样回填给模型，因此无论成功还是失败都返回字符串、不向上抛异常，
-    # 让模型能读到错误并自行决定下一步，而不是让整个 REPL 崩溃。
+    """执行模型请求的 shell 命令，返回 stdout+stderr 合并后的字符串。
 
+    设计要点：
+    - 通过 shell=True 交由系统 shell 解释，支持管道、通配符等复杂语法。
+    - 超时 120s：防止死循环或等待输入的命令无限挂起。
+    - 输出截断到 50000 字符：避免超长输出撑爆上下文窗口。
+    - 空输出返回 "(no output)"：防止模型把空字符串误读成「调用失败」。
+    - 所有异常都转为 "Error: ..." 字符串返回，不向上抛出——
+      让模型能读到错误并自行决定下一步，而不是让整个 agent 循环崩溃。
+    """
     try:
         r = subprocess.run(
-            command,  # 要执行的命令
-            shell=True,  # 通过系统 shell 解释命令（支持管道、通配符等）
-            cwd=WORKDIR,  # 指定这条命令在哪个目录下执行
-            capture_output=True,  # 捕获 stdout 和 stderr
-            text=True,  # 以字符串（而非 bytes）返回输出
+            command,
+            shell=True,
+            cwd=WORKDIR,
+            capture_output=True,
+            text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,  # 超时保护：命令最多跑 120 秒，超时则抛 TimeoutExpired
+            timeout=120,
         )
-        # 合并标准输出与标准错误：模型同样需要看到报错内容才能判断成败。
         out = (r.stdout + r.stderr).strip()
-        # 截断到 50000 字，避免超长输出撑爆上下文；空输出回一个占位符，
-        # 以免模型把空字符串误读成「调用失败」。
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
-        # 命令超时（如死循环、等待输入），返回提示而非让异常冒泡。
         return "Error: Timeout (120s)"
     except (FileNotFoundError, OSError) as e:
-        # 进程无法启动等系统级错误（例如 shell 不存在、资源不足）。
         return f"Error: {e}"
 
 
 def safe_path(p: str) -> Path:
-    # 把模型给的相对路径解析成绝对路径，并确保它仍落在工作目录内，防止目录穿越。
-    # resolve() 会展开 `..` 和符号链接，所以像 `../../etc/passwd` 这类越权路径
-    # 在这一步会暴露真实位置；随后用 is_relative_to 拦掉所有逃出 WORKDIR 的路径。
+    """将模型给的相对路径解析为 WORKDIR 下的安全绝对路径。
 
-    # 先把 WORKDIR 也 resolve 一次：is_relative_to 是纯字符串前缀比较，只有当两边
-    # 都是规范化的真实路径时结果才可靠。这样本函数作为安全边界就不再依赖调用方
-    # 「恰好传进来一个已 resolve 的目录」这一隐含前提。
+    通过 resolve() + is_relative_to() 双重校验防止目录穿越攻击：
+    1. resolve() 展开 `..` 和符号链接，暴露真实位置。
+    2. is_relative_to() 确保结果仍在 WORKDIR 子树内。
+
+    两次 resolve（WORKDIR 和拼接结果各一次）是必须的——
+    is_relative_to 是纯字符串前缀比较，只有两边都是规范化的真实路径时结果才可靠。
+    如果路径越界则抛出 ValueError，由调用方（各 run_*）捕获并转为 "Error: ..." 返回给模型。
+
+    Raises:
+        ValueError: 路径逃逸 WORKDIR 时抛出。
+    """
     workdir = Path(WORKDIR).resolve()
     path = (workdir / p).resolve()
     if not path.is_relative_to(workdir):
@@ -306,6 +313,11 @@ def extract_text(content) -> str:
 
 
 def load_skill(name: str) -> str:
+    """按名称从 SKILL_REGISTRY 中查找并返回技能的完整 SKILL.md 原文。
+
+    注册表由 skills._scan_skills() 在模块导入时一次性填充，本函数只做 O(1) 字典查找。
+    未找到时返回错误提示字符串而非抛异常，与其余工具函数的约定保持一致。
+    """
     skill = SKILL_REGISTRY.get(name)
     if not skill:
         return f"Skill not found: {name}"
