@@ -20,7 +20,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def _scan_skills() -> None:
-    if not SKILLS_DIR.exists:
+    if not SKILLS_DIR.exists():
         return
     for d in sorted(SKILLS_DIR.iterdir()):
         if not d.is_dir():
@@ -30,7 +30,7 @@ def _scan_skills() -> None:
             raw = manifest.read_text()
             meta, body = _parse_frontmatter(raw)
             name = meta.get("name", d.name)
-            desc = meta.get("description", )
+            desc = meta.get("description", raw.split("\n")[0].lstrip("#").strip())
             SKILL_REGISTRY[name] = {"name": name, "description": desc, "content": raw}
 
 
