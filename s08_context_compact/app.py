@@ -1,3 +1,19 @@
+"""
+s08 Context Compact —— 带上下文压缩的编码 Agent REPL 应用。
+
+架构概览：
+  main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
+  agent_loop()  → 核心循环：压缩 → 调用 LLM → 执行工具 → 回填结果，直到模型停止请求工具
+  build_system()→ 构建 system prompt，注入可用 skill 列表
+
+上下文压缩管线（每轮 agent_loop 开始时依次执行）：
+  tool_result_budget → 单轮 tool_result 总大小超限时，持久化最大的结果到磁盘
+  snip_compact       → 消息数超限时，裁剪中间旧消息，保留头尾
+  micro_compact      → 压缩早期 tool_result 内容为占位文本
+  若仍超 CONTEXT_LIMIT → compact_history（LLM 摘要完全替代历史）
+  若 API 报 prompt_too_long → reactive_compact（保留尾部 + LLM 摘要）
+"""
+
 try:
     import readline
 
@@ -25,6 +41,7 @@ rounds_since_todo = 0
 
 
 def build_system() -> str:
+    """构建 system prompt：声明 agent 身份，注入当前可用的 skill 目录。"""
     catalog = list_skills()
     return (
         f"You are a coding agent at {WORKDIR}. "
@@ -33,7 +50,11 @@ def build_system() -> str:
     )
 
 
+# system prompt 在模块加载时一次性构建，后续所有 API 调用复用同一份
 SYSTEM = build_system()
+
+# prompt_too_long 时的最大重试次数：首次报错 → reactive_compact → 重试，
+# 若仍报错则直接抛出，避免无限循环
 MAX_REACTIVE_RETRIES = 1
 
 
@@ -46,10 +67,15 @@ def agent_loop(messages: list) -> None:
     global rounds_since_todo
     reactive_retries = 0
     while True:
+        # === 三层压缩管线：每轮先压缩再调用模型 ===
+        # 第一层：单轮 tool_result 预算控制 → 持久化超长结果到磁盘
         messages[:] = context.tool_result_budget(messages)
+        # 第二层：消息数裁剪 → 保留头尾，中间用占位消息替代
         messages[:] = context.snip_compact(messages)
+        # 第三层：早期 tool_result 内容压缩 → 替换为占位文本
         messages[:] = context.micro_compact(messages)
 
+        # 三层压缩后仍超限 → 全量 LLM 摘要替代
         if context.estimate_size(messages) > CONTEXT_LIMIT:
             print("[auto compact]")
             messages[:] = context.compact_history(messages)
@@ -71,6 +97,9 @@ def agent_loop(messages: list) -> None:
             )
             reactive_retries = 0
         except Exception as e:
+            # prompt_too_long → 上下文太长，API 拒绝请求。
+            # 用 reactive_compact 保留尾部最近消息并压缩其余，然后重试。
+            # 最多重试 MAX_REACTIVE_RETRIES 次，避免死循环。
             if (
                 "prompt_too_long" in str(e).lower()
                 or "too many tokens" in str(e).lower()
@@ -99,7 +128,8 @@ def agent_loop(messages: list) -> None:
         # 不需要提醒——提醒只针对模型陷入一连串工具调用却忘记更新任务列表的场景。
         rounds_since_todo += 1
 
-        # 执行模型请求的每个工具调用，收集结果
+        # === 工具执行阶段 ===
+        # 遍历模型返回的所有 tool_use 块，逐一执行并收集结果
         results = []
         for block in response.content:
             if block.type != "tool_use":
@@ -107,6 +137,8 @@ def agent_loop(messages: list) -> None:
             print(f"\033[36m> {block.name}\033[0m")
 
             if block.name == "compact":
+                # compact 工具是特殊的元操作：直接压缩当前历史，然后 break 跳出
+                # 本轮的工具循环，下一轮 agent_loop 迭代将用压缩后的历史继续
                 messages[:] = context.compact_history(messages)
                 results.append(
                     {
@@ -132,7 +164,7 @@ def agent_loop(messages: list) -> None:
 
             handler = TOOL_HANDLERS.get(block.name)
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
-            # hooks 工具执行后
+            # PostToolUse hook：工具执行后触发，可用于日志记录、结果后处理等
             trigger_hooks("PostToolUse", block, output)
 
             # 模型主动调用了 todo_write，重置提醒计数器，避免重复注入
@@ -144,7 +176,8 @@ def agent_loop(messages: list) -> None:
                 {"type": "tool_result", "tool_use_id": block.id, "content": output}
             )
         else:
-            # 工具结果以 user 角色回填，进入下一轮让模型据此继续
+            # for...else：未被 break 中断 → 所有 tool_use 都执行完毕
+            # 将收集到的 tool_result 以 user 角色回填，进入下一轮循环
             messages.append({"role": "user", "content": results})
             continue
 
