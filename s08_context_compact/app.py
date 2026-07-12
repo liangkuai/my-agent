@@ -179,7 +179,6 @@ def agent_loop(messages: list) -> None:
             # for...else：未被 break 中断 → 所有 tool_use 都执行完毕
             # 将收集到的 tool_result 以 user 角色回填，进入下一轮循环
             messages.append({"role": "user", "content": results})
-            continue
 
 
 def main() -> None:

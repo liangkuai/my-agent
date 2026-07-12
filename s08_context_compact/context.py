@@ -61,7 +61,7 @@ def _message_has_tool_use(msg: dict) -> bool:
 
 
 def _is_tool_result_message(msg: dict) -> bool:
-    """判断一条 user 消息是否全部由 tool_result 块组成。"""
+    """判断一条 user 消息的 content 中是否包含至少一个 tool_result 块。"""
     if msg.get("role") != "user":
         return False
     content = msg.get("content")
