@@ -10,11 +10,12 @@ except ImportError:
     pass
 
 import config
-from constant import WORKDIR, MODEL
+from constant import WORKDIR, MODEL, CONTEXT_LIMIT
 from skills import list_skills
 from llm_client import client
 from tool import TOOLS, TOOL_HANDLERS
 from hooks import trigger_hooks
+import context
 
 
 # 自上次 todo_write 调用以来已完成的 round 数。
@@ -33,6 +34,7 @@ def build_system() -> str:
 
 
 SYSTEM = build_system()
+MAX_REACTIVE_RETRIES = 1
 
 
 def agent_loop(messages: list) -> None:
@@ -42,7 +44,16 @@ def agent_loop(messages: list) -> None:
     追问消息并继续循环。
     """
     global rounds_since_todo
+    reactive_retries = 0
     while True:
+        messages[:] = context.tool_result_budget(messages)
+        messages[:] = context.snip_compact(messages)
+        messages[:] = context.micro_compact(messages)
+
+        if context.estimate_size(messages) > CONTEXT_LIMIT:
+            print("[auto compact]")
+            messages[:] = context.compact_history(messages)
+
         # 连续 N 轮未调用 todo_write 时，注入一条系统提醒催促模型更新任务列表
         if rounds_since_todo >= 3 and messages:
             messages.append(
@@ -50,13 +61,25 @@ def agent_loop(messages: list) -> None:
             )
             rounds_since_todo = 0
 
-        response = client.messages.create(
-            model=MODEL,
-            system=SYSTEM,
-            messages=messages,
-            tools=TOOLS,
-            max_tokens=8000,
-        )
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                system=SYSTEM,
+                messages=messages,
+                tools=TOOLS,
+                max_tokens=8000,
+            )
+            reactive_retries = 0
+        except Exception as e:
+            if (
+                "prompt_too_long" in str(e).lower()
+                or "too many tokens" in str(e).lower()
+            ) and reactive_retries < MAX_REACTIVE_RETRIES:
+                print("[reactive compact]")
+                messages[:] = context.reactive_compact(messages)
+                reactive_retries += 1
+                continue
+            raise
 
         # 把模型本轮回复（可能含文本和 tool_use 块）原样追加进历史
         messages.append({"role": "assistant", "content": response.content})
@@ -81,6 +104,19 @@ def agent_loop(messages: list) -> None:
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            print(f"\033[36m> {block.name}\033[0m")
+
+            if block.name == "compact":
+                messages[:] = context.compact_history(messages)
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": "[Compacted. Conversation history has been summarized.]",
+                    }
+                )
+                messages.append({"role": "user", "content": results})
+                break
 
             # hooks 工具执行前
             blocked = trigger_hooks("PreToolUse", block)
@@ -93,11 +129,9 @@ def agent_loop(messages: list) -> None:
                     }
                 )
                 continue
-            # print(f"\033[33m$ {block.name}\033[0m")
+
             handler = TOOL_HANDLERS.get(block.name)
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
-            # print(output[:200])
-            # print()
             # hooks 工具执行后
             trigger_hooks("PostToolUse", block, output)
 
@@ -109,28 +143,29 @@ def agent_loop(messages: list) -> None:
             results.append(
                 {"type": "tool_result", "tool_use_id": block.id, "content": output}
             )
-
-        # 工具结果以 user 角色回填，进入下一轮让模型据此继续
-        messages.append({"role": "user", "content": results})
+        else:
+            # 工具结果以 user 角色回填，进入下一轮让模型据此继续
+            messages.append({"role": "user", "content": results})
+            continue
 
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s07: Skill Loading")
+    print("s08: Context Compact")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
 
     while True:
         try:
-            query = input("\033[36ms07 >> \033[0m")
+            query = input("\033[36ms08 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s07: 会话记录等）
+        # 通知 hooks 用户已提交输入（s08: 会话记录等）
         trigger_hooks("UserPromptSubmit", query)
 
         history_messages.append({"role": "user", "content": query})

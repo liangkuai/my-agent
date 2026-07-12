@@ -18,3 +18,14 @@ SUB_SYSTEM = (
     "Complete the task you were given, then return a concise summary. "
     "Do not delegate further."
 )
+
+
+PERSIST_THRESHOLD = 30000
+    
+TOOL_RESULTS_DIR = WORKDIR / ".task_outputs" / "tool-results"
+
+KEEP_RECENT = 3
+
+CONTEXT_LIMIT = 50000
+
+TRANSCRIPT_DIR = WORKDIR / ".transcripts"
