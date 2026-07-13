@@ -1,16 +1,18 @@
 """
 Agent 可用的工具函数注册表。
 
-本模块定义了主 agent 和子 agent 共用的全部工具：shell 执行、文件读写、
-编辑、glob 搜索、todo 管理，以及子 agent 的 spawn 与工具回填循环。
+本模块是 s06 的工具层，定义了主 agent 和子 agent 共用的全部工具实现：
+shell 执行、文件读写、编辑、glob 搜索、todo 管理，以及子 agent 的 spawn
+与独立的工具回填循环。
 
 核心设计原则：
-1. 所有工具函数都不抛异常——错误以 "Error: ..." 字符串返回给模型，
-   让模型自行消化和重试，避免单次工具失败拖垮整个 agent 循环。
-2. 路径安全：safe_path() 是所有文件类工具的统一入口，通过 resolve + is_relative_to
-   双重校验防止目录穿越。
-3. 主/子 agent 共享 handler（run_bash / run_read / run_write / run_edit / run_glob），
-   但工具声明分开——主 agent 额外拥有 todo_write 和 task（子 agent spawn）。
+1. 不抛异常 → 所有工具函数的错误以 "Error: ..." 字符串返回给模型，
+   让模型自行解读和重试，避免单次工具失败拖垮整个 agent 循环。
+2. 路径安全 → safe_path() 是所有文件类工具的统一入口，通过 resolve
+   展开符号链接和 `..`，再由 is_relative_to 拦掉逃逸路径。
+3. 代码复用，声明分离 → 主/子 agent 共享同一组 handler 实现
+   （run_bash / run_read / run_write / run_edit / run_glob），
+   但工具定义分开——主 agent 额外拥有 todo_write 和 task。
 """
 
 import subprocess
@@ -24,42 +26,54 @@ from hooks import trigger_hooks
 
 
 def run_bash(command: str) -> str:
-    # 执行模型请求的 shell 命令，把结果（成功输出或错误信息）作为字符串返回。
-    # 返回值会原样回填给模型，因此无论成功还是失败都返回字符串、不向上抛异常，
-    # 让模型能读到错误并自行决定下一步，而不是让整个 REPL 崩溃。
+    """执行 shell 命令，合并 stdout+stderr 并截断为字符串返回。
 
+    所有工具函数的统一约定：不向上抛异常，错误以 "Error: ..." 字符串
+    返回给模型，让模型自行解读和重试，避免单次工具失败拖垮整个 agent 循环。
+
+    安全措施：
+    - shell=True 让命令经由系统 shell 解释，支持管道、通配符等
+    - cwd 锁定在 WORKDIR，配合 permission.py 的拒绝列表做双层防护
+    - 120 秒超时保护，防止死循环或等待输入卡死 agent 循环
+    - 输出截断到 50000 字符，避免超长输出撑爆模型上下文
+    - 空输出返回占位符 "(no output)"，防止模型把空字符串误读为调用失败
+
+    Returns:
+        命令的合并输出（截断后），或 "Error: ..." 错误描述。
+    """
     try:
         r = subprocess.run(
-            command,  # 要执行的命令
-            shell=True,  # 通过系统 shell 解释命令（支持管道、通配符等）
-            cwd=WORKDIR,  # 指定这条命令在哪个目录下执行
-            capture_output=True,  # 捕获 stdout 和 stderr
-            text=True,  # 以字符串（而非 bytes）返回输出
+            command,
+            shell=True,
+            cwd=WORKDIR,
+            capture_output=True,
+            text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,  # 超时保护：命令最多跑 120 秒，超时则抛 TimeoutExpired
+            timeout=120,
         )
-        # 合并标准输出与标准错误：模型同样需要看到报错内容才能判断成败。
         out = (r.stdout + r.stderr).strip()
-        # 截断到 50000 字，避免超长输出撑爆上下文；空输出回一个占位符，
-        # 以免模型把空字符串误读成「调用失败」。
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
-        # 命令超时（如死循环、等待输入），返回提示而非让异常冒泡。
         return "Error: Timeout (120s)"
     except (FileNotFoundError, OSError) as e:
-        # 进程无法启动等系统级错误（例如 shell 不存在、资源不足）。
         return f"Error: {e}"
 
 
 def safe_path(p: str) -> Path:
-    # 把模型给的相对路径解析成绝对路径，并确保它仍落在工作目录内，防止目录穿越。
-    # resolve() 会展开 `..` 和符号链接，所以像 `../../etc/passwd` 这类越权路径
-    # 在这一步会暴露真实位置；随后用 is_relative_to 拦掉所有逃出 WORKDIR 的路径。
+    """把相对路径解析为绝对路径，并确保落在 WORKDIR 内，防止目录穿越。
 
-    # 先把 WORKDIR 也 resolve 一次：is_relative_to 是纯字符串前缀比较，只有当两边
-    # 都是规范化的真实路径时结果才可靠。这样本函数作为安全边界就不再依赖调用方
-    # 「恰好传进来一个已 resolve 的目录」这一隐含前提。
+    安全机制：
+    1. 先把 WORKDIR 也 resolve() 一次——is_relative_to 在 Python 3.9~3.11
+       是纯字符串前缀比较，只有两边都是规范化的真实路径时结果才可靠。
+    2. (workdir / p).resolve() 展开所有 `..` 和符号链接，让 ../etc/passwd
+       这类攻击路径暴露真实位置。
+    3. is_relative_to 作为最后一道门槛，拦掉所有逃逸路径。
+
+    Raises:
+        ValueError: 路径指向 WORKDIR 之外时抛出，由调用方的 try/except 捕获
+                   并转为 "Error: ..." 字符串返回给模型。
+    """
     workdir = Path(WORKDIR).resolve()
     path = (workdir / p).resolve()
     if not path.is_relative_to(workdir):
@@ -70,13 +84,16 @@ def safe_path(p: str) -> Path:
 def run_read(path: str, limit: int | None = None) -> str:
     """读取文件内容，可选截断到前 limit 行。
 
-    与 run_bash 同理：所有文件类工具都把异常转成 "Error: ..." 字符串返回给模型，
-    而不是向上抛出——让模型读到错误并自行重试，避免单次工具失败拖垮整个循环。
+    Args:
+        path: 相对于 WORKDIR 的文件路径，经 safe_path() 校验。
+        limit: 若指定且小于实际行数，只返回前 limit 行，并在末尾追加
+               "... (N more lines)" 提示——防止模型把截断误当成文件的真实结尾。
+
+    Returns:
+        文件内容字符串，或 "Error: ..." 错误描述。
     """
     try:
         lines = safe_path(path).read_text().splitlines()
-        # 只读前 limit 行时，补一行 "... (N more lines)" 提示，免得模型把截断
-        # 误当成文件的真实结尾。
         if limit and limit < len(lines):
             lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
         return "\n".join(lines)
@@ -85,10 +102,15 @@ def run_read(path: str, limit: int | None = None) -> str:
 
 
 def run_write(path: str, content: str) -> str:
-    """写入内容到文件，自动创建缺失的父目录。"""
+    """写入内容到文件，自动创建缺失的父目录。
+
+    自动补建父目录让模型写新文件时不必先 mkdir——减少工具调用轮次。
+
+    Returns:
+        "Wrote N bytes to <path>" 确认消息，或 "Error: ..." 错误描述。
+    """
     try:
         file_path = safe_path(path)
-        # 自动补建缺失的父目录，这样模型写新文件时不必先手动创建目录。
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content)
         return f"Wrote {len(content)} bytes to {path}"
@@ -97,17 +119,21 @@ def run_write(path: str, content: str) -> str:
 
 
 def run_edit(path: str, old_text: str, new_text: str) -> str:
-    """精确替换文件中的一段文本（仅替换首次出现）。
+    """精确替换文件中的一段文本，仅替换首次出现。
 
-    若 old_text 在文件中不存在则报错，避免静默地什么都没改、却让模型以为成功了。
-    若 old_text 多次出现，每次调用只替换一处，更可控也避免误伤。
+    设计决策：
+    - 若 old_text 不存在 → 报错而非静默跳过，防止模型以为编辑成功。
+    - 若 old_text 多次出现 → 只替换第一处（str.replace count=1），
+      避免单次调用意外波及多处同名文本。模型可多次调用逐处修改。
+
+    Returns:
+        "Edited <path>" 确认消息，或 "Error: ..." 错误描述。
     """
     try:
         file_path = safe_path(path)
         text = file_path.read_text()
         if old_text not in text:
             return f"Error: text not found in {path}"
-        # count=1：只替换首次出现，单次调用不会意外波及多处同名文本。
         file_path.write_text(text.replace(old_text, new_text, 1))
         return f"Edited {path}"
     except Exception as e:
@@ -117,15 +143,19 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 def run_glob(pattern: str) -> str:
     """在 WORKDIR 下按 glob 模式搜索文件，返回匹配的相对路径列表。
 
-    搜索范围限定在 WORKDIR 内；结果会二次校验确保没有路径逃逸。
+    搜索范围通过 root_dir 限定在 WORKDIR 内；但 glob 结果仍可能经由 `..`
+    或符号链接指向外部，因此逐条用 is_relative_to 做二次校验。
+
+    glob 模块仅本函数使用，采用内联 import 避免污染模块顶层命名空间。
+
+    Returns:
+        换行分隔的匹配路径列表，无匹配时返回 "(no matches)"。
     """
     import glob as g
 
     try:
         results = []
         for match in g.glob(pattern, root_dir=WORKDIR):
-            # 二次校验：glob 结果可能经由 `..` 或符号链接指向 WORKDIR 之外，
-            # 这里和 safe_path 同样用 is_relative_to 过滤掉越界路径。
             if (WORKDIR / match).resolve().is_relative_to(WORKDIR):
                 results.append(match)
         return "\n".join(results) if results else "(no matches)"
@@ -133,27 +163,39 @@ def run_glob(pattern: str) -> str:
         return f"Error: {e}"
 
 
-# === 任务管理 ===
-# CURRENT_TODOS 是 agent_loop 生命周期内唯一的可变会话状态。
-# run_todo_write 负责更新，agent_loop 在每次 todo_write 调用后重置未使用工具提醒计数器。
+# =============================================================================
+#  任务管理
+#
+#  CURRENT_TODOS 是 agent_loop 生命周期内唯一的可变会话状态：
+#  - run_todo_write 负责校验并更新
+#  - agent_loop 在每次 todo_write 调用后重置 rounds_since_todo 计数器
+#  - 所有模块通过 `from tool import CURRENT_TODOS` 共享同一引用
+# =============================================================================
 CURRENT_TODOS: list[dict] = []
 
 
 def run_todo_write(todos: list[dict] | str) -> str:
-    """接收模型传来的任务列表，校验、记录状态，并打印彩色任务面板到终端。
+    """接收模型传来的任务列表，校验并更新全局状态，打印彩色面板到终端。
 
-    严格顺序：先校验 → 失败则把错误信息返回给模型让它自行修正；
-    校验通过后再更新全局状态，避免写进脏数据。
+    严格先校验后更新：校验失败则错误信息直接返回给模型让它自行修正，
+    校验通过才写入 CURRENT_TODOS，避免脏数据污染全局状态。
+
+    Args:
+        todos: 模型传入的 list[dict] 或 JSON/Python 字面量字符串，
+               _normalize_todos 会统一处理两种格式。
+
+    Returns:
+        确认消息或错误描述，直接作为 tool_result 回填给模型。
     """
     global CURRENT_TODOS
     normalized_todos, error = _normalize_todos(todos)
     if error:
         return error
-    # error 为 None ⇒ 解构出的 normalized 必为 list，但类型检查器无法自动
-    # 缩窄联合元组的双向依赖，这里显式断言帮助缩窄。
+    # error 为 None ⇒ 解构出的 normalized 必为 list；但类型检查器无法自动
+    # 缩窄联合元组的双向依赖，显式断言帮助缩窄。
     assert normalized_todos is not None
     CURRENT_TODOS = normalized_todos
-    # 用 ANSI 转义码渲染彩色任务面板：黄色标题、青色进行中箭头、绿色勾
+    # 用 ANSI 转义码渲染彩色面板：黄色标题、青色进行中箭头、绿色勾
     lines = ["\n\033[33m## Current Tasks\033[0m"]
     for t in CURRENT_TODOS:
         icon = {
@@ -166,31 +208,30 @@ def run_todo_write(todos: list[dict] | str) -> str:
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 
-# 返回类型用 list 而非 list[dict]：json.loads / ast.literal_eval 返回 Any，
-# 类型检查器无法证明元素为 dict——但下方的逐元素 isinstance 校验在运行时保证了这一点。
 def _normalize_todos(todos: list[dict] | str) -> tuple[list, None] | tuple[None, str]:
     """将模型输入规范化成合法的 todo 列表，返回 (结果, 错误) 二选一的元组。
 
-    模型可能传入已解析的 list[dict]，也可能传入 JSON 字符串（甚至 Python
-    风格的单引号字面量）。json.loads 先试，失败后用 ast.literal_eval 兜底，
-    兼顾 LLM 输出的各种格式漂移。
+    容错策略：模型可能传入已解析的 list[dict]，也可能传入 JSON 字符串或
+    Python 风格的单引号字面量。json.loads 先试，失败后用 ast.literal_eval
+    兜底（后者能处理单引号、None/True/False 等 Python 原生写法），兼顾 LLM
+    输出的各种格式漂移。
+
+    注意：返回类型标注为 list 而非 list[dict]——json.loads / ast.literal_eval
+    返回 Any，类型检查器无法证明元素为 dict，但下方的逐元素 isinstance 校验
+    在运行时保证了这一点。
 
     Returns:
         (todos, None)  — 校验通过，todos 为 list[dict]
         (None, error)  — 校验失败，error 为可直接返回给模型的错误描述
     """
-    # 模型偶尔输出未解析的 JSON/Python 字面量字符串，先尝试反序列化
     if isinstance(todos, str):
         try:
             todos = json.loads(todos)
         except json.JSONDecodeError:
             try:
-                # ast.literal_eval 比 json.loads 更宽松，能处理单引号、
-                # None/True/False 等 Python 原生写法
                 todos = ast.literal_eval(todos)
             except (SyntaxError, ValueError):
                 return None, "Error: todos must be a list or JSON array string"
-    # 类型 + 结构校验，逐层确保数据形状符合预期
     if not isinstance(todos, list):
         return None, "Error: todos must be a list"
     for i, t in enumerate(todos):
@@ -206,17 +247,19 @@ def _normalize_todos(todos: list[dict] | str) -> tuple[list, None] | tuple[None,
 def spawn_subagent(description: str) -> str:
     """启动子 agent 独立完成一项复杂子任务，只返回最终结论。
 
-    子 agent 在一个清新的上下文中运行（只保留 description 作为首条 user 消息），
-    拥有独立的工具集 SUB_TOOLS（bash/read/write/edit/glob，不含 todo_write 和 task）。
-    通过 client 直接驱动工具调用循环，而不是让上层 agent_loop 统一调度——
-    这样主 agent 调用 task 工具后只需等待最终结果，不必参与子 agent 的每一步推理。
+    子 agent 拥有独立的工具集 SUB_TOOLS（bash/read/write/edit/glob，不含
+    todo_write 和 task），在全新上下文中运行——只保留 description 作为首条
+    user 消息，不继承主 agent 的对话历史。
 
-    循环机制：
-    1. 将 description 作为首条 user 消息发送给模型。
-    2. 若模型返回 tool_use，逐一执行工具并将结果以 tool_result 回填。
-    3. 工具执行前后触发 PreToolUse / PostToolUse hooks，支持拦截和审计。
-    4. 若 stop_reason 不再是 tool_use（即模型给出最终文本回复），循环结束。
-    5. 最多 30 轮；超限后从最近一条 assistant 消息中提取文本结果返回。
+    主 agent 调用 task 工具后只需等待最终结果，不必参与子 agent 的每一步推理，
+    因为子 agent 通过 client 自驱动工具调用循环，而非交由上层 agent_loop 调度。
+
+    循环流程（最多 30 轮）：
+    1. 发送 description → 模型返回 reply（可能含 tool_use）
+    2. 逐一执行工具（PreToolUse / PostToolUse hooks 照常触发）
+    3. 将 tool_result 列表回填 → 下一轮
+    4. stop_reason != "tool_use" → 循环结束，提取文本结果
+    5. 超限后向前查找最后一条 assistant 消息中的文本；仍无则返回提示
 
     Args:
         description: 描述子任务的纯文本，作为子 agent 的初始 user 消息。
@@ -295,9 +338,15 @@ def spawn_subagent(description: str) -> str:
 def extract_text(content) -> str:
     """从 API 返回的 content 中提取纯文本。
 
-    API 的 content 字段是 ContentBlock 列表（可能混合 text / tool_use / tool_result），
-    本函数过滤出 type == "text" 的块并拼接，用于获取模型最终的文本回复。
-    若 content 本身已是字符串则原样返回。
+    Anthropic Messages API 的 content 字段是 ContentBlock 列表，可能混合
+    text / tool_use / tool_result 三种类型。本函数过滤出 type == "text" 的块
+    并拼接，用于从模型回复中提取最终的自然语言文本。
+
+    Args:
+        content: API 返回的 content（list[ContentBlock]），或已是纯字符串。
+
+    Returns:
+        拼接后的纯文本字符串。
     """
     if not isinstance(content, list):
         return str(content)
