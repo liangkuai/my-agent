@@ -115,12 +115,14 @@ def check_permission(block: Any) -> str | None:
         reason = check_deny_list(block.input.get("command", ""))
         if reason:
             print(f"\n\033[31m⛔ {reason}\033[0m")
+            print()
             return "Permission denied by deny list"
 
     # 第二层：规则检查 → 用户确认（软阻止）
     reason = check_rules(block.name, block.input)
     if reason:
         decision = ask_user(block.name, block.input, reason)
+        print()
         if decision == "deny":
             return "Permission denied by user"
 
