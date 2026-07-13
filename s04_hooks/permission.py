@@ -118,7 +118,7 @@ def check_permission(block: Any) -> str | None:
     if block.name == "bash":
         reason = check_deny_list(block.input.get("command", ""))
         if reason:
-            print(f"\033[31m⛔ {reason}\033[0m")
+            print(f"\n\033[31m⛔ {reason}\033[0m")
             return "Permission denied by deny list"
 
     # 第二层：规则检查 —— 命中后进入用户交互确认
