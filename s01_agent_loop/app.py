@@ -55,7 +55,12 @@ TOOLS = [
         "description": "Run a shell command. Returns stdout, stderr, or an error message.",
         "input_schema": {
             "type": "object",
-            "properties": {"command": {"type": "string", "description": "The shell command to execute"}},
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute",
+                }
+            },
             "required": ["command"],
         },
     }
@@ -69,6 +74,7 @@ client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
 # =============================================================================
 # 工具执行
 # =============================================================================
+
 
 def run_bash(command: str) -> str:
     """执行模型请求的 shell 命令，以字符串形式返回结果。
@@ -95,11 +101,11 @@ def run_bash(command: str) -> str:
     try:
         r = subprocess.run(
             command,
-            shell=True,           # 通过 shell 执行（支持管道、通配符）
-            cwd=os.getcwd(),      # 在当前工作目录下执行
+            shell=True,  # 通过 shell 执行（支持管道、通配符）
+            cwd=os.getcwd(),  # 在当前工作目录下执行
             capture_output=True,  # 捕获 stdout 和 stderr
-            text=True,            # 输出为字符串而非 bytes
-            timeout=120,          # 超时保护：120 秒
+            text=True,  # 输出为字符串而非 bytes
+            timeout=120,  # 超时保护：120 秒
         )
         # 合并 stdout 与 stderr —— 错误信息同样有助于模型判断。
         out = (r.stdout + r.stderr).strip()
@@ -117,6 +123,7 @@ def run_bash(command: str) -> str:
 # =============================================================================
 # Agent 循环
 # =============================================================================
+
 
 def agent_loop(messages: list) -> None:
     """运行一次 agentic loop：反复「调用模型 → 执行工具 → 回填结果」。
@@ -203,6 +210,7 @@ def agent_loop(messages: list) -> None:
 # =============================================================================
 # 主入口
 # =============================================================================
+
 
 def main() -> None:
     """启动 REPL：循环读取用户输入，交给 agent_loop 处理，打印最终回复。"""
