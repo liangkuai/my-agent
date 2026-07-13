@@ -78,6 +78,7 @@ def check_rules(tool_name: str, args: dict) -> str | None:
 
 # ── 用户确认 ────────────────────────────────────────────────────────
 
+
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
     """弹交互式确认提示，返回 "allow" 或 "deny"。
 
@@ -91,6 +92,7 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
 
 
 # ── 管道入口 ────────────────────────────────────────────────────────
+
 
 def check_permission(block: Any) -> str | None:
     """权限管道主入口。
@@ -106,12 +108,14 @@ def check_permission(block: Any) -> str | None:
         reason = check_deny_list(block.input.get("command", ""))
         if reason:
             print(f"\n\033[31m⛔ {reason}\033[0m")
+            print()
             return "Permission denied by deny list"
 
     # 第二层：规则检查 —— 命中后进入用户交互确认
     reason = check_rules(block.name, block.input)
     if reason:
         decision = ask_user(block.name, block.input, reason)
+        print()
         if decision == "deny":
             return "Permission denied by user"
 

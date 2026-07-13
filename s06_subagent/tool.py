@@ -205,6 +205,7 @@ def run_todo_write(todos: list[dict] | str) -> str:
         }[t["status"]]
         lines.append(f"  [{icon}] {t['content']}")
     print("\n".join(lines))
+    print()
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 
@@ -301,7 +302,6 @@ def spawn_subagent(description: str) -> str:
                             "content": str(blocked),
                         }
                     )
-                    print()
                     continue
 
                 # 从 SUB_TOOL_HANDLERS 查找 handler 并执行。

@@ -119,7 +119,6 @@ def agent_loop(messages: list) -> None:
                         "content": str(blocked),
                     }
                 )
-                print()
                 continue
 
             handler = TOOL_HANDLERS.get(block.name)
