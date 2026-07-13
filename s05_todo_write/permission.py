@@ -51,15 +51,17 @@ def check_deny_list(command: str) -> str | None:
 PERMISSION_RULES = [
     {
         "tools": ["write_file", "edit_file"],
+        # 路径不存在时默认值 "" → WORKDIR / "" == WORKDIR，不触发越界。
+        # 畸形的无 path 调用会在后续 safe_path 中以 ValueError 兜底。
         "check": lambda args: (
-            # 路径不存在时默认值 "" → WORKDIR / "" == WORKDIR，不触发越界。
-            # 畸形的无 path 调用会在后续 safe_path 中以 ValueError 兜底。
             not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR)
         ),
         "message": "Writing outside workspace",
     },
     {
         "tools": ["bash"],
+        # 子串匹配，非穷举——仅拦截几类典型危险命令作为 demo 演示。
+        # 生产环境应改用沙箱隔离，而非依赖子串黑名单。
         "check": lambda args: any(
             kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]
         ),
@@ -78,6 +80,7 @@ def check_rules(tool_name: str, args: dict) -> str | None:
 
 # ── 用户确认 ────────────────────────────────────────────────────────
 
+
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
     """弹交互式确认提示，返回 "allow" 或 "deny"。
 
@@ -92,23 +95,29 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
 
 # ── 管道入口 ────────────────────────────────────────────────────────
 
+
 def check_permission(block: Any) -> str | None:
-    """权限管道主入口。
+    """权限管道主入口，按顺序过三道防线。
 
     参数 block 为 Anthropic SDK 返回的 tool_use 内容块，需要具备
     .name（str）和 .input（dict）两个属性。
 
+    管道流程（任意一层返回非 None 即停止）：
+    1. 拒绝列表  —— bash 专属硬阻止，命中直接拒绝，无交互
+    2. 规则检查  —— 命中后弹出交互式确认，用户可放行或拒绝
+    3. 隐含放行  —— 以上均未命中，返回 None 表示正常执行
+
     返回 None 表示放行，非 None 字符串表示拒绝原因（由 hooks 层直接作为
     tool_result 回填给模型，模型可据此调整策略）。
     """
-    # 第一层：拒绝列表 —— bash 专属，直接拒绝
+    # 第一层：拒绝列表（硬阻止，无交互）
     if block.name == "bash":
         reason = check_deny_list(block.input.get("command", ""))
         if reason:
-            print(f"\033[31m⛔ {reason}\033[0m")
+            print(f"\n\033[31m⛔ {reason}\033[0m")
             return "Permission denied by deny list"
 
-    # 第二层：规则检查 —— 命中后进入用户交互确认
+    # 第二层：规则检查 → 用户确认（软阻止）
     reason = check_rules(block.name, block.input)
     if reason:
         decision = ask_user(block.name, block.input, reason)

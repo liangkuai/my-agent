@@ -1,3 +1,14 @@
+"""
+工具定义与实现 —— 模型可调用的所有工具及其处理函数。
+
+设计原则：
+- 所有工具函数返回字符串（成功结果或错误描述），绝不向上抛异常
+  → 让模型读到错误信息后自行调整策略，而不是让整个 agent_loop 崩溃
+- 文件操作均通过 safe_path 做路径安全校验，防止目录穿越
+- 工具元数据（TOOLS 列表）和处理器映射（TOOL_HANDLERS）集中管理，
+  app.py 只需 import 即可接入 agent_loop
+"""
+
 import subprocess
 import json
 import ast
@@ -115,16 +126,21 @@ def run_todo_write(todos: list[dict] | str) -> str:
 
     严格顺序：先校验 → 失败则把错误信息返回给模型让它自行修正；
     校验通过后再更新全局状态，避免写进脏数据。
+
+    终端渲染使用 ANSI 转义码：
+    - \\033[33m 黄色标题
+    - \\033[36m▸ 青色箭头（进行中）
+    - \\033[32m✓ 绿色勾（已完成）
+    - \\033[0m 重置样式
     """
     global CURRENT_TODOS
     normalized_todos, error = _normalize_todos(todos)
     if error:
         return error
-    # error 为 None ⇒ 解构出的 normalized 必为 list，但类型检查器无法自动
-    # 缩窄联合元组的双向依赖，这里显式断言帮助缩窄。
+    # error 为 None ⇒ normalized_todos 必为 list。联合元组的两个元素类型相互
+    # 依赖，但类型检查器解构后无法跨元素缩窄，这里显式 assert 辅助类型缩窄。
     assert normalized_todos is not None
     CURRENT_TODOS = normalized_todos
-    # 用 ANSI 转义码渲染彩色任务面板：黄色标题、青色进行中箭头、绿色勾
     lines = ["\n\033[33m## Current Tasks\033[0m"]
     for t in CURRENT_TODOS:
         icon = {
@@ -139,6 +155,10 @@ def run_todo_write(todos: list[dict] | str) -> str:
 
 # 返回类型用 list 而非 list[dict]：json.loads / ast.literal_eval 返回 Any，
 # 类型检查器无法证明元素为 dict——但下方的逐元素 isinstance 校验在运行时保证了这一点。
+# 注意联合类型写法 tuple[list, None] | tuple[None, str] 等价于：
+#   (todos, None)  → 校验通过
+#   (None, error)  → 校验失败
+# 两者互斥，调用方通过解构后判 None 即可分流。
 def _normalize_todos(todos: list[dict] | str) -> tuple[list, None] | tuple[None, str]:
     """将模型输入规范化成合法的 todo 列表，返回 (结果, 错误) 二选一的元组。
 

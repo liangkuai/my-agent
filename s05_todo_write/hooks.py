@@ -9,7 +9,7 @@
 - 拦截型（permission_hook）：返回非 None 字符串 → 阻止工具执行，字符串作为拒绝原因回填给模型
 - 观察型（log / summary / context_inject / large_output）：始终返回 None，仅记录或打印，不影响主流程
 
-四个事件在 agent_loop 中的触发位置见 app.py，这里只定义钩子逻辑。
+四个事件的具体触发时机见 app.py 中的 agent_loop，本模块只定义钩子逻辑本身。
 """
 
 from typing import Any, Callable
@@ -41,6 +41,10 @@ def trigger_hooks(event: str, *args):
     返回语义：
     - None                  → 全部放行，流程继续
     - 非 None 字符串         → 第一个拦截结果，调用方应以此中止后续操作
+
+    短路规则：任一回调返回非 None 时立即停止遍历、不再执行后续回调。
+    这保证了拦截型钩子（如 permission_hook）生效后，排在它后面的回调
+    不会再对本次调用进行处理。
 
     注意：不同事件的 *args 参数不同（见各钩子签名），调用方需保证参数匹配。
     """
@@ -115,6 +119,12 @@ def summary_hook(messages: list) -> None:
     遍历完整对话历史的 tool_result 块计数，不包含被拦截未执行的调用。
     注意：messages 跨多轮查询累积（见 app.py 中 history_messages 的生命周期），
     因此统计的是整个 session 的累计值，而非当前单次查询。
+
+    统计逻辑：
+    - 外层遍历每条消息 m
+    - 中层展开 m["content"]（仅当它是列表时；assistant 消息的 content 是列表，
+      user 文本消息的 content 是字符串）
+    - 内层过滤 type == "tool_result" 的字典块
     """
     tool_count = sum(
         1

@@ -1,3 +1,16 @@
+"""
+s05 Todo Write —— 带有 todo_write 工具和钩子系统的 Coding Agent REPL。
+
+本模块是应用的入口，负责：
+1. 初始化 LLM 客户端和系统提示词
+2. 实现 agent_loop：模型 → 工具执行 → 回填结果 的循环
+3. 提供 REPL 交互界面（main 函数）
+
+亮点：
+- rounds_since_todo 计数器：连续 N 轮未调用 todo_write 时自动注入提醒
+- Stop hook：模型停工具后仍可注入追问，打破单次查询的会话边界
+"""
+
 import os
 from dotenv import load_dotenv
 from anthropic import Anthropic
@@ -14,16 +27,14 @@ except ImportError:
     pass
 
 from constant import WORKDIR
-from tool import TOOLS, TOOL_HANDLERS
+from tool import TOOLS, TOOL_HANDLERS, CURRENT_TODOS
 from hooks import trigger_hooks
 
 
 # 加载配置
 load_dotenv()
 
-# 初始化静态变量
-# resolve() 得到规范化的绝对路径：safe_path 内部的 is_relative_to 越界判断
-# 依赖两边都是真实路径，这里先把根目录定死，工具层就有了可靠的安全边界。
+# 从环境变量读取配置
 MODEL = os.getenv("MODEL_ID", "")
 SYSTEM = (
     f"You are a coding agent at {WORKDIR}. "
@@ -46,11 +57,17 @@ def agent_loop(messages: list) -> None:
 
     每轮检查是否需要注入 todo 提醒；退出前触发 Stop hook，允许外部注入
     追问消息并继续循环。
+
+    消息流示意（每轮 = 一次完整的 API 调用 + 工具执行）：
+      [user, assistant(tool_use), user(tool_result), assistant(tool_use), ...]
+       ↑                                                              ↑
+       初始 query                                             最终 text 回复
     """
     global rounds_since_todo
     while True:
-        # 连续 N 轮未调用 todo_write 时，注入一条系统提醒催促模型更新任务列表
-        if rounds_since_todo >= 3 and messages:
+        # 连续 N 轮未调用 todo_write 时注入提醒。仅在模型已创建过任务列表
+        # 的前提下才提醒，从未创建就不打扰。
+        if rounds_since_todo >= 3 and messages and CURRENT_TODOS:
             messages.append(
                 {"role": "user", "content": "<reminder>Update your todos.</reminder>"}
             )
@@ -88,7 +105,7 @@ def agent_loop(messages: list) -> None:
             if block.type != "tool_use":
                 continue
 
-            # hooks 工具执行前
+            # hooks 工具执行前（日志记录 + 权限检查），被拦截则用拒绝原因作为结果回填
             blocked = trigger_hooks("PreToolUse", block)
             if blocked:
                 results.append(
@@ -98,13 +115,13 @@ def agent_loop(messages: list) -> None:
                         "content": str(blocked),
                     }
                 )
+                print()
                 continue
-            # print(f"\033[33m$ {block.name}\033[0m")
+
             handler = TOOL_HANDLERS.get(block.name)
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
-            # print(output[:200])
-            # print()
-            # hooks 工具执行后
+
+            # hooks 工具执行后（如大输出告警等观察型钩子）
             trigger_hooks("PostToolUse", block, output)  # s05: post hook
 
             # 模型主动调用了 todo_write，重置提醒计数器，避免重复注入
@@ -121,10 +138,15 @@ def agent_loop(messages: list) -> None:
 
 
 def main() -> None:
-    """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
+    """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。
+
+    history_messages 跨多轮查询累积（session 级别），模型可以看到本会话的完整
+    对话历史，实现多轮对话的记忆效果。
+    """
     print("s05: Todo Write")
     print("输入问题，回车发送。输入 q 退出。\n")
 
+    # 跨查询共享的对话历史，每轮 agent_loop 会在末尾持续追加
     history_messages = []
 
     while True:
@@ -145,6 +167,9 @@ def main() -> None:
         # agent_loop 结束后，末尾必为 assistant 消息。
         # content 为内容块列表时只挑文本块展示（工具调用块由 run_todo_write 等函数
         # 内置的 print 在终端直接渲染）。
+        # 使用 getattr 而非直接访问 .type：SDK 返回的 content block 可能是
+        # TextBlock / ToolUseBlock 等类型，getattr 兼容多种类型且不会因缺少属性
+        # 而抛异常。
         response_content = history_messages[-1]["content"]
         if isinstance(response_content, list):
             for block in response_content:
