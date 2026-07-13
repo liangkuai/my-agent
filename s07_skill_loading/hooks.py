@@ -1,15 +1,21 @@
 """
 钩子系统 —— 在 agent 对话循环的关键节点插入自定义逻辑。
 
-架构分为两层：
-1. 注册层：HOOKS 字典 + register_hook() 维护事件 → 回调的映射
-2. 触发层：trigger_hooks() 按注册顺序依次执行回调，首个非 None 返回值即短路
+架构两层：
+1. 注册层：HOOKS 字典 + register_hook()，事件 → 回调列表
+2. 触发层：trigger_hooks()，按注册顺序执行，首个非 None 即短路
 
-钩子按返回值语义分为两类：
-- 拦截型（permission_hook）：返回非 None 字符串 → 阻止工具执行，字符串作为拒绝原因回填给模型
-- 观察型（log / summary / context_inject / large_output）：始终返回 None，仅记录或打印，不影响主流程
+两类钩子：
+- 拦截型：返回非 None 字符串 → 阻止执行，字符串作为拒绝原因回填
+- 观察型：始终返回 None，仅记录或打印
 
-四个事件在 agent_loop 中的触发位置见 app.py，这里只定义钩子逻辑。
+四个事件（触发位置见 app.py agent_loop）：
+- UserPromptSubmit  — 用户每次输入后
+- PreToolUse        — 每个 tool_use 块执行前
+- PostToolUse       — 每个 tool_use 块执行后
+- Stop              — 模型停止请求工具、循环即将退出时
+
+扩展：在下方定义回调，在模块末尾 register_hook 即可。
 """
 
 from typing import Any, Callable
@@ -31,7 +37,11 @@ HOOKS = {
 
 
 def register_hook(event: str, callback: Callable[..., str | None]) -> None:
-    """将回调注册到指定事件，后续 trigger_hooks 会按注册顺序调用。"""
+    """将回调注册到指定事件，后续 trigger_hooks 会按注册顺序调用。
+
+    event 必须是 HOOKS 字典中已存在的事件名，否则会 KeyError——
+    这是有意为之：不支持的事件名应立即暴露，避免回调静默不执行。
+    """
     HOOKS[event].append(callback)
 
 
@@ -42,7 +52,11 @@ def trigger_hooks(event: str, *args):
     - None                  → 全部放行，流程继续
     - 非 None 字符串         → 第一个拦截结果，调用方应以此中止后续操作
 
-    注意：不同事件的 *args 参数不同（见各钩子签名），调用方需保证参数匹配。
+    不同事件的 *args 参数不同，由各事件的触发位置决定：
+    - UserPromptSubmit  → args = (query: str,)
+    - PreToolUse        → args = (block,)
+    - PostToolUse       → args = (block, output: str)
+    - Stop              → args = (messages: list,)
     """
     for callback in HOOKS[event]:
         result = callback(*args)
@@ -52,22 +66,18 @@ def trigger_hooks(event: str, *args):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 钩子回调定义
+# 回调定义（签名由各事件的触发位置决定）
 #
-# 每个回调的签名由对应事件的触发方约定：
-#   UserPromptSubmit  → (query: str)
-#   PreToolUse        → (block)              block 为 SDK ContentBlock 对象
-#   PostToolUse       → (block, output: str)
-#   Stop              → (messages: list)     完整的对话历史
-#
-# 拦截型回调返回 str（拒绝原因），观察型回调始终返回 None。
+# 规则：拦截型返回 str（拒绝原因），观察型始终返回 None。
+# 所有回调通过 side effect 发挥作用，返回值仅表示"是否拦截"。
 # ══════════════════════════════════════════════════════════════════════
 
 
 def context_inject_hook(query: str) -> str | None:
     """UserPromptSubmit —— 每次用户输入后打印当前工作目录。
 
-    仅作信息提示，不拦截。
+    仅作信息提示，不拦截。可用于扩展：注入额外的上下文到对话历史中
+    （例如在用户消息前追加当前 git 分支、最近文件变更等环境信息）。
     """
     print(f"\033[90m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
     return None
@@ -99,7 +109,8 @@ def log_hook(block: Any) -> str | None:
 def large_output_hook(block: Any, output: str) -> str | None:
     """PostToolUse —— 工具执行后检测超大输出（>100k 字符）并告警。
 
-    超大输出可能撑爆模型上下文窗口，黄色告警提醒用户关注。
+    超大输出可能撑爆模型上下文窗口（单条 tool_result 过大导致后续几轮
+    的 token 预算被占满），黄色告警提醒用户关注。
     始终返回 None，不拦截（输出已产生，告警只是提示）。
     """
     if len(output) > 100000:
@@ -112,7 +123,7 @@ def large_output_hook(block: Any, output: str) -> str | None:
 def summary_hook(messages: list) -> None:
     """Stop —— 对话循环结束后统计本次会话中执行过的工具调用总数。
 
-    遍历完整对话历史的 tool_result 块计数，不包含被拦截未执行的调用。
+    遍历完整对话历史的 tool_result 块计数，不包含被 PreToolUse 拦截未执行的调用。
     注意：messages 跨多轮查询累积（见 app.py 中 history_messages 的生命周期），
     因此统计的是整个 session 的累计值，而非当前单次查询。
     """

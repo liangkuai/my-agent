@@ -32,6 +32,8 @@ def run_bash(command: str) -> str:
     - 超时 120s：防止死循环或等待输入的命令无限挂起。
     - 输出截断到 50000 字符：避免超长输出撑爆上下文窗口。
     - 空输出返回 "(no output)"：防止模型把空字符串误读成「调用失败」。
+    - errors="replace"：遇到无法解码的字节时用 � 替换而非抛 UnicodeDecodeError——
+      保证模型至少能看到部分有效输出。
     - 所有异常都转为 "Error: ..." 字符串返回，不向上抛出——
       让模型能读到错误并自行决定下一步，而不是让整个 agent 循环崩溃。
     """
@@ -213,25 +215,24 @@ def _normalize_todos(todos: list[dict] | str) -> tuple[list, None] | tuple[None,
 
 
 def spawn_subagent(description: str) -> str:
-    """启动子 agent 独立完成一项复杂子任务，只返回最终结论。
+    """启动子 agent 独立完成复杂子任务，只返回最终结论。
 
-    子 agent 在一个清新的上下文中运行（只保留 description 作为首条 user 消息），
-    拥有独立的工具集 SUB_TOOLS（bash/read/write/edit/glob，不含 todo_write 和 task）。
-    通过 client 直接驱动工具调用循环，而不是让上层 agent_loop 统一调度——
-    这样主 agent 调用 task 工具后只需等待最终结果，不必参与子 agent 的每一步推理。
+    子 agent 使用全新上下文（首条 user 消息为 description）、独立工具集
+    SUB_TOOLS，在自己的循环中驱动工具调用——主 agent 只需等待结果。
 
-    循环机制：
-    1. 将 description 作为首条 user 消息发送给模型。
-    2. 若模型返回 tool_use，逐一执行工具并将结果以 tool_result 回填。
-    3. 工具执行前后触发 PreToolUse / PostToolUse hooks，支持拦截和审计。
-    4. 若 stop_reason 不再是 tool_use（即模型给出最终文本回复），循环结束。
-    5. 最多 30 轮；超限后从最近一条 assistant 消息中提取文本结果返回。
+    与主 agent 的关键差异：
+    - 不继承对话历史：干净的上下文让推理更聚焦
+    - 不含 todo_write（临时 worker 不需要任务列表）
+    - 不含 task（禁止 spawn 孙 agent，防止无限嵌套）
+
+    循环最多 30 轮；工具执行前后同样触发 PreToolUse / PostToolUse hooks。
+    超限后从最近一条 assistant 消息提取文本结果返回。
 
     Args:
-        description: 描述子任务的纯文本，作为子 agent 的初始 user 消息。
+        description: 子任务的描述文本，作为子 agent 的首条 user 消息。
 
     Returns:
-        子 agent 的最终文本回复；若 30 轮后无文本输出则返回提示信息。
+        子 agent 的最终文本回复；30 轮后仍无文本则返回提示信息。
     """
     print(f"\n\033[35m[Subagent spawned]\033[0m")
 
@@ -303,9 +304,8 @@ def spawn_subagent(description: str) -> str:
 def extract_text(content) -> str:
     """从 API 返回的 content 中提取纯文本。
 
-    API 的 content 字段是 ContentBlock 列表（可能混合 text / tool_use / tool_result），
-    本函数过滤出 type == "text" 的块并拼接，用于获取模型最终的文本回复。
-    若 content 本身已是字符串则原样返回。
+    content 可能是字符串（原样返回）或 ContentBlock 列表（混合 text / tool_use /
+    tool_result 对象）。本函数过滤出 type == "text" 的块并用换行符拼接。
     """
     if not isinstance(content, list):
         return str(content)
@@ -328,9 +328,20 @@ def load_skill(name: str) -> str:
 
 # =============================================================================
 #  工具定义：声明每个工具的名称、描述和参数 schema（Anthropic Tool Use 格式）。
-#  TOOLS        → 提供给主 agent，包含全部 7 个工具。
-#  SUB_TOOLS    → 提供给子 agent，仅含 5 个基础文件/shell 工具（不含 todo_write 和 task）。
+#
+#  工具分层：
+#  TOOLS（主 agent，8 个）  → bash / read_file / write_file / edit_file / glob
+#                           / todo_write / task / load_skill
+#  SUB_TOOLS（子 agent，5 个）→ bash / read_file / write_file / edit_file / glob
+#
+#  差异说明：
+#  - todo_write：子 agent 是临时 worker，不需要自己的任务列表。
+#  - task：子 agent 不能 spawn 孙 agent，防止无限嵌套。
+#  - load_skill：子 agent 的 SUB_SYSTEM 提示中未提及技能系统，
+#    其工具集中也不含 load_skill（子 agent 专注于执行而非学习技能）。
+#
 #  TOOL_HANDLERS / SUB_TOOL_HANDLERS → 把工具名映射到对应的 Python 函数。
+#  主/子 agent 共享同一组 handler 实现（run_*），但 handler 映射表不同。
 # =============================================================================
 
 TOOLS = [

@@ -1,12 +1,17 @@
 """
 权限管道 —— 在工具执行前对模型请求的每个 tool_use 块进行安全检查。
 
-管道分三层：
-1. 拒绝列表（硬阻止）—— 直接拦截，无交互机会
-2. 规则检查（软阻止）—— 命中后弹出交互式确认
-3. 放行           —— 以上均未命中，正常执行
+管道分三层，由 check_permission() 串联：
+1. 拒绝列表（硬阻止）—— 直接拦截，无交互机会。用于已知的危险命令模式。
+2. 规则检查（软阻止）—— 命中后弹出交互式确认，由用户决定是否放行。
+3. 放行              —— 以上均未命中，正常执行。
 
 工具层（tool.py）不再做权限判断，安全逻辑统一收敛到本模块。
+hooks.py 的 permission_hook 是唯一调用方，通过 PreToolUse 事件接入 agent_loop。
+
+安全声明：当前实现使用子串匹配，远非真正的安全边界——空格变体、编码变形、
+命令别名等均可绕过。仅作为 CLI demo 的第一道粗筛，生产环境必须使用沙箱或
+容器隔离来执行不可信命令。
 """
 
 from typing import Any
@@ -81,8 +86,9 @@ def check_rules(tool_name: str, args: dict) -> str | None:
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
     """弹交互式确认提示，返回 "allow" 或 "deny"。
 
-    注意：input() 同步阻塞当前线程。CLI 单线程场景可接受；
-    用于多线程／异步环境时需改为非阻塞确认机制（如 asyncio.Queue + callback）。
+    input() 同步阻塞当前线程——CLI 单线程场景可接受；
+    用于多线程或异步环境时需改为非阻塞确认机制（如 asyncio.Queue + callback）。
+    用户输入 y/yes 以外的任何内容均视为 deny，默认拒绝原则。
     """
     print(f"\n\033[33m⚠  {reason}\033[0m")
     print(f"   Tool: {tool_name}({args})")
@@ -93,13 +99,18 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
 # ── 管道入口 ────────────────────────────────────────────────────────
 
 def check_permission(block: Any) -> str | None:
-    """权限管道主入口。
+    """权限管道主入口，由 hooks.permission_hook 在每次 PreToolUse 时调用。
 
-    参数 block 为 Anthropic SDK 返回的 tool_use 内容块，需要具备
+    参数 block 为 Anthropic SDK 返回的 tool_use 内容块，需具备
     .name（str）和 .input（dict）两个属性。
 
-    返回 None 表示放行，非 None 字符串表示拒绝原因（由 hooks 层直接作为
-    tool_result 回填给模型，模型可据此调整策略）。
+    返回 None 表示放行；非 None 字符串表示拒绝原因（由 hooks 层直接作为
+    tool_result 回填给模型，模型看到拒绝信息后可调整策略重试）。
+
+    管道流程：
+    1. bash 命令先过拒绝列表（DENY_LIST），命中则直接拒绝。
+    2. 所有工具过规则检查（PERMISSION_RULES），命中则弹出用户确认。
+    3. 全部通过则放行。
     """
     # 第一层：拒绝列表 —— bash 专属，直接拒绝
     if block.name == "bash":
