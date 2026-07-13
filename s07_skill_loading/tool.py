@@ -171,6 +171,7 @@ def run_todo_write(todos: list[dict] | str) -> str:
         }[t["status"]]
         lines.append(f"  [{icon}] {t['content']}")
     print("\n".join(lines))
+    print()
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 
@@ -295,6 +296,7 @@ def spawn_subagent(description: str) -> str:
         if not result:
             result = "Subagent stopped after 30 turns without final answer."
     print(f"\033[35m[Subagent done]\033[0m")
+    print()
     return result
 
 
