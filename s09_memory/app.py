@@ -1,5 +1,5 @@
 """
-s08 Context Compact —— 带上下文压缩的编码 Agent REPL 应用。
+s09 Context Compact —— 带上下文压缩的编码 Agent REPL 应用。
 
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
@@ -32,6 +32,7 @@ from llm_client import client
 from tool import TOOLS, TOOL_HANDLERS
 from hooks import trigger_hooks
 import context
+import memory
 
 
 # 自上次 todo_write 调用以来已完成的 round 数。
@@ -41,17 +42,15 @@ rounds_since_todo = 0
 
 
 def build_system() -> str:
-    """构建 system prompt：声明 agent 身份，注入当前可用的 skill 目录。"""
-    catalog = list_skills()
+    index = memory.read_memory_index()
+    memories_section = f"\n\nMemories available:\n{index}" if index else ""
     return (
-        f"You are a coding agent at {WORKDIR}. "
-        f"Skills available:\n{catalog}\n"
-        "Use load_skill to get full details when needed."
+        f"You are a coding agent at {WORKDIR}."
+        f"{memories_section}\n"
+        "Relevant memories are injected below. Respect user preferences from memory.\n"
+        "When the user says 'remember' or expresses a clear preference, extract it as a memory."
     )
 
-
-# system prompt 在模块加载时一次性构建，后续所有 API 调用复用同一份
-SYSTEM = build_system()
 
 # prompt_too_long 时的最大重试次数：首次报错 → reactive_compact → 重试，
 # 若仍报错则直接抛出，避免无限循环
@@ -66,7 +65,23 @@ def agent_loop(messages: list) -> None:
     """
     global rounds_since_todo
     reactive_retries = 0
+    memories_content = memory.load_memories(messages)
+    memory_turn = (
+        len(messages) - 1
+        if messages and isinstance(messages[-1].get("content"), str)
+        else None
+    )
+
+    system = build_system()
+
     while True:
+        pre_compress = [
+            m
+            if isinstance(m, dict)
+            else {"role": m.get("role", ""), "content": str(m.get("content", ""))}
+            for m in messages
+        ]
+
         # === 三层压缩管线：每轮先压缩再调用模型 ===
         # 第一层：单轮 tool_result 预算控制 → 持久化超长结果到磁盘
         messages[:] = context.tool_result_budget(messages)
@@ -88,9 +103,22 @@ def agent_loop(messages: list) -> None:
             rounds_since_todo = 0
 
         try:
+            request_messages = messages
+            if (
+                memories_content
+                and memory_turn is not None
+                and memory_turn < len(messages)
+            ):
+                request_messages = messages.copy()
+                request_messages[memory_turn] = {
+                    **messages[memory_turn],
+                    "content": memories_content
+                    + "\n\n"
+                    + messages[memory_turn]["content"],
+                }
             response = client.messages.create(
                 model=MODEL,
-                system=SYSTEM,
+                system=system,
                 messages=messages,
                 tools=TOOLS,
                 max_tokens=8000,
@@ -122,6 +150,8 @@ def agent_loop(messages: list) -> None:
             if force:
                 messages.append({"role": "user", "content": force})
                 continue
+            memory.extract_memories(pre_compress)
+            memory.consolidate_memories()
             return
 
         # 仅在 tool_use 轮次递增计数器。文本回复轮次（模型给出最终答案）
@@ -183,21 +213,21 @@ def agent_loop(messages: list) -> None:
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s08: Context Compact")
+    print("s09: Memory")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
 
     while True:
         try:
-            query = input("\033[36ms08 >> \033[0m")
+            query = input("\033[36ms09 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s08: 会话记录等）
+        # 通知 hooks 用户已提交输入（s09: 会话记录等）
         trigger_hooks("UserPromptSubmit", query)
 
         history_messages.append({"role": "user", "content": query})

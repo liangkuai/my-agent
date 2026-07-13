@@ -64,3 +64,10 @@ KEEP_RECENT = 3
 # agent_loop 每轮执行三层压缩后，若 estimate_size 仍超过此值则全量 LLM 摘要替代。
 # 50000 字符约 12500 token，为大多数模型上下文窗口的保守下界。
 CONTEXT_LIMIT = 50000
+
+
+MEMORY_DIR = WORKDIR / ".memory"
+
+MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
+
+CONSOLIDATE_THRESHOLD = 10

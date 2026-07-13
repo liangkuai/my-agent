@@ -19,6 +19,7 @@ tool_use ↔ tool_result 配对的前提下减少上下文体积。
 import time
 import json
 from typing import Any
+from pathlib import Path
 
 from constant import (
     MODEL,
@@ -219,7 +220,7 @@ def tool_result_budget(messages: list, max_bytes: int = 200_000) -> list:
     return messages
 
 
-def write_transcript(messages):
+def write_transcript(messages: list) -> Path:
     """将完整消息历史以 JSONL 格式写入转录文件，用于事后回溯或调试。
 
     使用 json.dumps(..., default=str) 处理 SDK 返回的富对象（它们可能
@@ -234,7 +235,7 @@ def write_transcript(messages):
     return path
 
 
-def summarize_history(messages):
+def summarize_history(messages: list) -> str:
     """调用 LLM 将对话历史总结为一段紧凑的摘要文本。
 
     截取前 80000 字符作为输入（约 20000 token，为大多数模型的合理输入窗口），
@@ -263,7 +264,7 @@ def summarize_history(messages):
     )
 
 
-def compact_history(messages):
+def compact_history(messages: list) -> list:
     """全量压缩（硬重启）：将全部历史写入转录文件，用 LLM 摘要完全替代上下文。
 
     这是最重的压缩手段。返回的新消息列表中只有一条 user 消息，相当于
@@ -278,7 +279,7 @@ def compact_history(messages):
     return [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
 
 
-def reactive_compact(messages):
+def reactive_compact(messages: list) -> list:
     """响应式压缩：保留最近约 5 条消息的原始内容，其余用 LLM 摘要替代。
 
     触发场景：API 返回 prompt_too_long 错误时调用（app.agent_loop 的 except 分支）。
