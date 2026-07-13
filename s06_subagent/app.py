@@ -12,7 +12,7 @@ except ImportError:
 import config
 from constant import MODEL, SYSTEM
 from llm_client import client
-from tool import TOOLS, TOOL_HANDLERS
+from tool import TOOLS, TOOL_HANDLERS, CURRENT_TODOS
 from hooks import trigger_hooks
 
 
@@ -30,8 +30,9 @@ def agent_loop(messages: list) -> None:
     """
     global rounds_since_todo
     while True:
-        # 连续 N 轮未调用 todo_write 时，注入一条系统提醒催促模型更新任务列表
-        if rounds_since_todo >= 3 and messages:
+        # 连续 N 轮未调用 todo_write 时注入提醒。仅在模型已创建过任务列表
+        # 的前提下才提醒，从未创建就不打扰。
+        if rounds_since_todo >= 3 and messages and CURRENT_TODOS:
             messages.append(
                 {"role": "user", "content": "<reminder>Update your todos.</reminder>"}
             )
@@ -79,12 +80,12 @@ def agent_loop(messages: list) -> None:
                         "content": str(blocked),
                     }
                 )
+                print()
                 continue
-            # print(f"\033[33m$ {block.name}\033[0m")
+
             handler = TOOL_HANDLERS.get(block.name)
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
-            # print(output[:200])
-            # print()
+
             # hooks 工具执行后
             trigger_hooks("PostToolUse", block, output)
 

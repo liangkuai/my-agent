@@ -258,6 +258,7 @@ def spawn_subagent(description: str) -> str:
                             "content": str(blocked),
                         }
                     )
+                    print()
                     continue
 
                 # 从 SUB_TOOL_HANDLERS 查找 handler 并执行。
@@ -266,7 +267,6 @@ def spawn_subagent(description: str) -> str:
 
                 # PostToolUse hook：审计、日志等后置处理。
                 trigger_hooks("PostToolUse", block, output)
-                print(f"  \033[90m[sub] {block.name}: {str(output)[:100]}\033[0m")
                 results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": output}
                 )
@@ -286,7 +286,9 @@ def spawn_subagent(description: str) -> str:
                     break
         if not result:
             result = "Subagent stopped after 30 turns without final answer."
+
     print(f"\033[35m[Subagent done]\033[0m")
+    print()
     return result
 
 
