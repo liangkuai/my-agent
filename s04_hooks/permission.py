@@ -33,7 +33,11 @@ DENY_LIST = [
 
 
 def check_deny_list(command: str) -> str | None:
-    """命中则返回拒绝原因字符串，否则返回 None。"""
+    """遍历拒绝列表，命中返回拒绝原因字符串；未命中返回 None。
+
+    使用简单子串匹配，零依赖、速度快，但也容易被绕过（多空格、编码变体、
+    大小写变换等）。生产环境应改用沙箱隔离执行不可信命令。
+    """
     for pattern in DENY_LIST:
         if pattern in command:
             return f"Blocked: '{pattern}' is on the deny list"
@@ -42,11 +46,14 @@ def check_deny_list(command: str) -> str | None:
 
 # ── 规则检查 ────────────────────────────────────────────────────────
 # 每条规则包含：
-#   tools    — 适用的工具名列表
-#   check    — 判断函数，接收工具参数字典，返回 True 表示拦截
-#   message  — 拦截时展示给用户的警告信息
+#   tools    — 适用的工具名列表（如 ["write_file", "edit_file"]）
+#   check    — 判断函数，接收工具参数字典（block.input），返回 True 表示命中
+#   message  — 命中时展示给用户的警告信息（同时作为确认提示的标题）
 #
-# 同样使用子串匹配，局限性同上。
+# check 内联为 lambda：每条规则的判断逻辑仅 2-5 行，内联减少阅读跳转；
+# 若某条规则逻辑超出 5 行，应提取为命名函数并补充独立单元测试。
+#
+# 命令关键字匹配同样使用子串方式，局限性同 check_deny_list。
 
 PERMISSION_RULES = [
     {
@@ -69,7 +76,11 @@ PERMISSION_RULES = [
 
 
 def check_rules(tool_name: str, args: dict) -> str | None:
-    """遍历规则列表，首次命中即返回警告信息；均未命中返回 None。"""
+    """遍历规则列表，首次命中即返回警告信息；均未命中返回 None。
+
+    采用首次命中即短路策略 —— 多条规则同时命中时只展示第一条，
+    避免给用户连续弹出多个确认提示造成疲劳。
+    """
     for rule in PERMISSION_RULES:
         if tool_name in rule["tools"] and rule["check"](args):
             return rule["message"]
@@ -77,6 +88,7 @@ def check_rules(tool_name: str, args: dict) -> str | None:
 
 
 # ── 用户确认 ────────────────────────────────────────────────────────
+
 
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
     """弹交互式确认提示，返回 "allow" 或 "deny"。
@@ -91,6 +103,7 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
 
 
 # ── 管道入口 ────────────────────────────────────────────────────────
+
 
 def check_permission(block: Any) -> str | None:
     """权限管道主入口。

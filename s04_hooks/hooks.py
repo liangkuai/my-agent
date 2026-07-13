@@ -6,10 +6,10 @@
 2. 触发层：trigger_hooks() 按注册顺序依次执行回调，首个非 None 返回值即短路
 
 钩子按返回值语义分为两类：
-- 拦截型（permission_hook）：返回非 None 字符串 → 阻止工具执行，字符串作为拒绝原因回填给模型
+- 拦截型（permission_hook）：返回非 None 字符串 → 阻止工具执行，该字符串作为拒绝原因回填给模型
 - 观察型（log / summary / context_inject / large_output）：始终返回 None，仅记录或打印，不影响主流程
 
-四个事件在 agent_loop 中的触发位置见 app.py，这里只定义钩子逻辑。
+四个事件在 agent_loop 中的触发位置见 app.py，本模块专注钩子逻辑的定义与注册。
 """
 
 from typing import Any, Callable
@@ -31,18 +31,23 @@ HOOKS = {
 
 
 def register_hook(event: str, callback: Callable[..., str | None]) -> None:
-    """将回调注册到指定事件，后续 trigger_hooks 会按注册顺序调用。"""
+    """将回调注册到指定事件，后续 trigger_hooks 会按注册顺序依次调用。
+
+    注册顺序即执行顺序，因此应将观察型钩子（日志等）排在拦截型钩子（权限等）
+    之前，确保被拦截的调用也能留下审计记录。
+    """
     HOOKS[event].append(callback)
 
 
 def trigger_hooks(event: str, *args):
-    """按顺序执行 event 下的所有回调。
+    """按注册顺序依次执行 event 下的所有回调。
 
     返回语义：
-    - None                  → 全部放行，流程继续
-    - 非 None 字符串         → 第一个拦截结果，调用方应以此中止后续操作
+    - None           → 全部放行，流程继续
+    - 非 None 字符串  → 首个拦截结果，调用方应据此中止后续操作
 
-    注意：不同事件的 *args 参数不同（见各钩子签名），调用方需保证参数匹配。
+    注意：不同事件的 *args 签名不同（详见下方「钩子回调定义」区域的约定），
+    调用方需保证传入参数与回调签名匹配。
     """
     for callback in HOOKS[event]:
         result = callback(*args)
