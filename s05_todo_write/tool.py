@@ -150,6 +150,7 @@ def run_todo_write(todos: list[dict] | str) -> str:
         }[t["status"]]
         lines.append(f"  [{icon}] {t['content']}")
     print("\n".join(lines))
+    print()
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 
