@@ -1,5 +1,5 @@
 """
-s10 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
+s11 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
 
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
@@ -26,24 +26,20 @@ except ImportError:
     pass
 
 import config
-from constant import MODEL, CONTEXT_LIMIT
+import constant
 from llm_client import client
 import system_prompt
 import tools
 import hooks
 import context
 import memory
+import recovery
 
 
 # 自上次 todo_write 调用以来已完成的 round 数。
 # agent_loop 每轮 +1；todo_write 调用时清零。达到阈值时向模型注入提醒，
 # 防止模型长时间不更新任务列表（例如沉浸在一连串 bash/read 调用中）。
 rounds_since_todo = 0
-
-
-# prompt_too_long 时的最大重试次数：首次报错 → reactive_compact → 重试，
-# 若仍报错则直接抛出，避免无限循环
-MAX_REACTIVE_RETRIES = 1
 
 
 def agent_loop(messages: list, session_context: dict) -> None:
@@ -53,7 +49,6 @@ def agent_loop(messages: list, session_context: dict) -> None:
     追问消息并继续循环。
     """
     global rounds_since_todo
-    reactive_retries = 0
 
     memories_content = memory.load_memories(messages)
     # 只将记忆注入到本轮对话的首条 user 消息之前（即最新一条纯文本 user 消息）。
@@ -66,6 +61,8 @@ def agent_loop(messages: list, session_context: dict) -> None:
         else None
     )
 
+    state = recovery.RecoveryState()
+    max_tokens = constant.DEFAULT_MAX_TOKENS
     system = system_prompt.get_system_prompt(session_context)
 
     while True:
@@ -89,7 +86,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
         messages[:] = context.micro_compact(messages)
 
         # 三层压缩后仍超限 → 全量 LLM 摘要替代
-        if context.estimate_size(messages) > CONTEXT_LIMIT:
+        if context.estimate_size(messages) > constant.CONTEXT_LIMIT:
             print("[auto compact]")
             messages[:] = context.compact_history(messages)
 
@@ -115,27 +112,75 @@ def agent_loop(messages: list, session_context: dict) -> None:
                     + "\n\n"
                     + messages[memory_turn]["content"],
                 }
-            response = client.messages.create(
-                model=MODEL,
-                system=system,
-                messages=request_messages,
-                tools=tools.TOOLS,
-                max_tokens=8000,
+            response = recovery.with_retry(
+                lambda mt=max_tokens, mdl=state.current_model: client.messages.create(
+                    model=mdl,
+                    system=system,
+                    messages=request_messages,
+                    tools=tools.TOOLS,
+                    max_tokens=mt,
+                ),
+                state,
             )
-            reactive_retries = 0  # API 调用成功 → 重置重试计数，后续压缩仍可重试
+            state.has_attempted_reactive_compact = False
         except Exception as e:
             # prompt_too_long → 上下文太长，API 拒绝请求。
             # 用 reactive_compact 保留尾部最近消息并压缩其余，然后重试。
             # 最多重试 MAX_REACTIVE_RETRIES 次，避免死循环。
-            if (
-                "prompt_too_long" in str(e).lower()
-                or "too many tokens" in str(e).lower()
-            ) and reactive_retries < MAX_REACTIVE_RETRIES:
-                print("[reactive compact]")
-                messages[:] = context.reactive_compact(messages)
-                reactive_retries += 1
+            if recovery.is_prompt_too_long_error(e):
+                if not state.has_attempted_reactive_compact:
+                    print("[reactive compact]")
+                    messages[:] = context.reactive_compact(messages)
+                    state.has_attempted_reactive_compact = True
+                    continue
+                print("  \033[31m[unrecoverable] still too long after compact\033[0m")
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "[Error] Context too large, cannot continue.",
+                            }
+                        ],
+                    }
+                )
+                return
+
+            name = type(e).__name__
+            print(f"  \033[31m[unrecoverable] {name}: {str(e)[:100]}\033[0m")
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": f"[Error] {name}: {str(e)[:200]}"}
+                    ],
+                }
+            )
+            return
+
+        if response.stop_reason == "max_tokens":
+            if not state.has_escalated:
+                max_tokens = constant.ESCALATED_MAX_TOKENS
+                state.has_escalated = True
+                print(
+                    f"  \033[33m[max_tokens] escalating"
+                    f" {constant.DEFAULT_MAX_TOKENS} -> {constant.ESCALATED_MAX_TOKENS}\033[0m"
+                )
                 continue
-            raise
+            messages.append({"role": "assistant", "content": response.content})
+            if state.recovery_count < constant.MAX_RECOVERY_RETRIES:
+                messages.append(
+                    {"role": "user", "content": constant.CONTINUATION_PROMPT}
+                )
+                state.recovery_count += 1
+                print(
+                    f"  \033[33m[max_tokens] continuation"
+                    f" {state.recovery_count}/{constant.MAX_RECOVERY_RETRIES}\033[0m"
+                )
+                continue
+            print("  \033[31m[max_tokens] recovery limit reached\033[0m")
+            return
 
         # 把模型本轮回复（可能含文本和 tool_use 块）原样追加进历史
         messages.append({"role": "assistant", "content": response.content})
@@ -177,7 +222,9 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 )
                 messages.append({"role": "user", "content": results})
 
-                session_context = context.update_session_context(session_context, messages)
+                session_context = context.update_session_context(
+                    session_context, messages
+                )
                 system = system_prompt.get_system_prompt(session_context)
                 break
 
@@ -217,7 +264,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s10: System Prompt")
+    print("s11: Error Recovery")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
@@ -225,19 +272,21 @@ def main() -> None:
 
     while True:
         try:
-            query = input("\033[36ms10 >> \033[0m")
+            query = input("\033[36ms11 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s10: 会话记录等）
+        # 通知 hooks 用户已提交输入（s11: 会话记录等）
         hooks.trigger_hooks("UserPromptSubmit", query)
 
         history_messages.append({"role": "user", "content": query})
         agent_loop(history_messages, session_context)
-        session_context = context.update_session_context(session_context, history_messages)
+        session_context = context.update_session_context(
+            session_context, history_messages
+        )
 
         # agent_loop 结束后，末尾必为 assistant 消息。
         # content 为内容块列表时只挑文本块展示（工具调用块由 run_todo_write 等函数
