@@ -1,14 +1,16 @@
 """
-System prompt 组装模块 —— 将模板片段与运行时上下文拼接，生成发给 LLM 的系统提示。
+System prompt 组装模块 —— 将静态模板片段与运行时上下文拼接，生成发给 LLM 的系统提示。
 
 设计要点：
 1. 带缓存的组装：将 context 序列化为规范化 JSON 串，与上次快照逐字比对；
    仅在 context 变化时才重建 prompt，否则直接返回缓存。
-2. 按需注入：只有 context["memories"] 非空时才追加记忆段落，避免
-   空字符串段落占用 prompt 空间。
-3. 组装逻辑显式编排：`assemble_system_prompt` 按固定顺序拼接模板片段，
-   新增段落需同时修改 PROMPT_SECTIONS 字典和 assemble_system_prompt 的
-   拼接代码，不是自动发现——这样更可控，且一眼就能看清段落顺序。
+2. 动态段落：tools / workspace / memories 三段内容来自 context 字典（由
+   context.update_context() 填充），而非硬编码——工具列表从 TOOLS 定义
+   自动提取（含 compact 等特殊拦截工具），工作目录和记忆索引也反映运行时实际状态。
+3. 按需注入：memories 为空时不追加记忆段落，避免空字符串占用 prompt 空间。
+4. 显式拼接顺序：assemble_system_prompt 按 identity → tools → workspace →
+   (可选) memories 的固定顺序拼接，新增段落需同时修改本函数和
+   context.update_context()，不是自动发现——这样更可控，且一眼就能看清段落顺序。
 
 对外接口：
   get_system_prompt(context) → str
@@ -20,9 +22,9 @@ import json
 import constant
 
 
-# ── 模板片段 ───────────────────────────────────────────────────────────
-# 每一段是一个独立的语义单元。assemble_system_prompt 按固定顺序拼接；
-# 新增段落时需同步修改字典和拼接逻辑，两者缺一不可。
+# ── 静态模板 ───────────────────────────────────────────────────────────
+# 仅保留 identity 为静态片段（不随运行时变化）。tools / workspace / memories
+# 三段内容由 assemble_system_prompt 从 context 字典中动态取值并格式化。
 
 PROMPT_SECTIONS = {
     "identity": "You are a coding agent. Act, don't explain.",
@@ -33,20 +35,26 @@ PROMPT_SECTIONS = {
 
 
 def assemble_system_prompt(context: dict) -> str:
-    """将模板片段与运行时上下文拼接为完整的 system prompt 字符串。
+    """将静态模板与 context 中的运行时信息拼接为完整的 system prompt 字符串。
 
     拼接顺序固定：identity → tools → workspace → (可选) memories。
-    memories 来自 context["memories"]（由 context.update_context() 填充的
-    MEMORY.md 索引内容），仅在非空时注入，空字符串不追加。
+
+    context 由 context.update_context() 构建，包含三个字段：
+    - enabled_tools: list[str] — 已注册工具名，由 tools.list_tool_name() 提供
+    - workspace: str — 当前工作目录的绝对路径
+    - memories: str — MEMORY.md 索引内容（无记忆时为空字符串 ""）
     """
     sections = []
 
-    # 三个基础段落：身份声明、可用工具、工作目录 —— 每次必有
+    # 静态段落：身份声明，每次必有
     sections.append(PROMPT_SECTIONS["identity"])
-    sections.append(PROMPT_SECTIONS["tools"])
-    sections.append(PROMPT_SECTIONS["workspace"])
 
-    # 可选段落：相关记忆 —— 只在记忆库非空时注入
+    # 动态段落：工具列表、工作目录 —— 从 context 取值，反映运行时实际状态
+    tools_list = context.get("enabled_tools", [])
+    sections.append(f"Available tools: {', '.join(tools_list)}.")
+    sections.append(f"Working directory: {context.get('workspace', str(constant.WORKDIR))}")
+
+    # 可选段落：记忆索引 —— 仅在记忆库非空时注入
     memories = context.get("memories", "")
     if memories:
         sections.append(f"Relevant memories:\n{memories}")
@@ -56,7 +64,7 @@ def assemble_system_prompt(context: dict) -> str:
 
 
 # ── 缓存 ───────────────────────────────────────────────────────────────
-# context 字典中 enabled_tools 来自 TOOL_HANDLERS.keys()（静态注册表），
+# context 字典中 enabled_tools 来自 tools.TOOLS 列表（静态工具定义），
 # workspace 来自 WORKDIR（常量），仅 memories 在记忆索引文件更新时变化。
 # 因此绝大多数 agent_loop 迭代中 context 不变，缓存命中率极高。
 # 两个模块级变量分别保存上一次的 context 快照和生成的 prompt 结果。

@@ -511,12 +511,16 @@ SUB_TOOL_HANDLERS = {
 
 
 def list_tool_name() -> list:
-    """返回主 agent 所有已注册工具的名称列表。
+    """返回主 agent 所有可用工具的名称列表。
+
+    从 TOOLS 列表（面向 API 的工具定义，即模型实际可调用的工具集合）中
+    提取 name 字段，而非从 TOOL_HANDLERS 字典。因为 compact 等元操作工具
+    在 app.agent_loop 中特殊拦截处理，不经过 TOOL_HANDLERS 分发，但模型
+    仍然可以调用它们——system prompt 中声明的工具列表应与 API 声明一致。
 
     供 context.update_context() 调用，填入 context["enabled_tools"]。
-    顺序与 TOOL_HANDLERS 的插入顺序一致。
     """
-    return list(TOOL_HANDLERS.keys())
+    return [t["name"] for t in TOOLS]
 
 
 def use_tool(name: str, input: dict) -> str:

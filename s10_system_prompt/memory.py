@@ -440,8 +440,9 @@ def load_memories(messages: list) -> str:
 def read_memory_index() -> str:
     """读取 MEMORY.md 索引文件的全部内容。
 
-    供 app.build_system() 调用，将记忆索引注入 system prompt 的
-    "Memories available:" 段落。索引按文件名排序，每行一条链接式条目。
+    供 context.update_context() 调用，间接注入 system prompt 的
+    记忆段落。索引按文件名排序，每行一条链接式条目。
+    本函数是记忆索引数据的唯一读取入口，外部不应直接操作 MEMORY_INDEX 文件。
 
     Returns:
         MEMORY.md 的文本内容；文件不存在时返回空字符串 ""。

@@ -24,6 +24,7 @@ from pathlib import Path
 import constant
 from llm_client import client
 import tools
+import memory
 
 
 def estimate_size(msgs: list):
@@ -305,24 +306,20 @@ def reactive_compact(messages: list) -> list:
     ]
 
 
-def update_context(context: dict, messages: list) -> dict:
+def update_session_context(session_context: dict, messages: list) -> dict:
     """构建 system_prompt.get_system_prompt() 所需的上下文字典。
 
-    当前仅收集三个字段（不依赖传入的 context 或 messages，为后续扩展预留参数）：
-    - enabled_tools: 已注册工具名列表（用于 system prompt 工具段落）
-    - workspace: 当前工作目录的绝对路径字符串
-    - memories: MEMORY_INDEX 文件的全文内容（空字符串表示无记忆）
+    每次调用都从全局状态重新采集三个字段，与传入的 context / messages 无关
+    （两个参数为后续按消息历史增量更新上下文的扩展预留）：
+    - enabled_tools: 从 tools.TOOLS 定义中提取的全部工具名列表
+    - workspace: 当前工作目录的绝对路径
+    - memories: MEMORY_INDEX 文件全文（无记忆时为空字符串）
 
     调用方（app.agent_loop / app.main）在每次 agent_loop 前后调用此函数，
     以确保 system prompt 反映最新的工具集和记忆索引。
     """
-    memories = ""
-    if constant.MEMORY_INDEX.exists():
-        content = constant.MEMORY_INDEX.read_text().strip()
-        if content:
-            memories = content
     return {
         "enabled_tools": tools.list_tool_name(),
         "workspace": str(constant.WORKDIR),
-        "memories": memories,
+        "memories": memory.read_memory_index(),
     }
