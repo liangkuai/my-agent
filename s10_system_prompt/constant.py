@@ -1,5 +1,5 @@
 """
-s08 Context Compact —— 全局常量与配置。
+s10 System Prompt —— 全局常量与配置。
 
 本模块在导入时计算所有路径常量，其余模块直接引用，避免散落魔术数字。
 按类别分为三组：路径、LLM 配置、压缩阈值。
@@ -37,7 +37,7 @@ TRANSCRIPT_DIR = WORKDIR / ".transcripts"
 MODEL = os.getenv("MODEL_ID", "")
 
 # 子 agent 的 system prompt（Workflow / Agent 工具分派子任务时使用）。
-# 与 app.build_system() 构建的主 agent prompt 不同：子 agent 只需完成单一任务
+# 与 system_prompt.get_system_prompt() 构建的主 agent prompt 不同：子 agent 只需完成单一任务
 # 并返回摘要，不需要 skill 目录等额外上下文。
 SUB_SYSTEM = (
     f"You are a coding agent at {WORKDIR}. "
@@ -72,7 +72,7 @@ MEMORY_DIR = WORKDIR / ".memory"
 
 # 记忆索引文件，位于 MEMORY_DIR 下。由 _rebuild_index() 自动维护，
 # 内容为 Markdown 链接列表（如 "- [name](file.md) — description"）。
-# app.build_system() 将其注入 system prompt 的 "Memories available:" 段落。
+# 由 memory.read_memory_index() 读取，经 context → system_prompt 注入 system prompt。
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 
 # 记忆合并触发阈值。当记忆文件数 >= 此值时，consolidate_memories()

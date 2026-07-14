@@ -1,5 +1,5 @@
 """
-s10 Context Compact —— 带上下文压缩的编码 Agent REPL 应用。
+s10 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
 
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
@@ -237,7 +237,7 @@ def main() -> None:
 
         history_messages.append({"role": "user", "content": query})
         agent_loop(history_messages, session_context)
-        session_context = context.update_session_context({}, history_messages)
+        session_context = context.update_session_context(session_context, history_messages)
 
         # agent_loop 结束后，末尾必为 assistant 消息。
         # content 为内容块列表时只挑文本块展示（工具调用块由 run_todo_write 等函数

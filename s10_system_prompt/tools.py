@@ -2,7 +2,7 @@
 Agent 可用的工具函数注册表。
 
 本模块定义了主 agent 和子 agent 共用的全部工具：shell 执行、文件读写、
-编辑、glob 搜索、todo 管理，以及子 agent 的 spawn 与工具回填循环。
+编辑、glob 搜索、todo 管理、skill 加载、对话压缩，以及子 agent 的 spawn 与工具回填循环。
 
 核心设计原则：
 1. 所有工具函数都不抛异常——错误以 "Error: ..." 字符串返回给模型，
@@ -10,7 +10,7 @@ Agent 可用的工具函数注册表。
 2. 路径安全：safe_path() 是所有文件类工具的统一入口，通过 resolve + is_relative_to
    双重校验防止目录穿越。
 3. 主/子 agent 共享 handler（run_bash / run_read / run_write / run_edit / run_glob），
-   但工具声明分开——主 agent 额外拥有 todo_write 和 task（子 agent spawn）。
+   但工具声明分开——主 agent 额外拥有 todo_write、task、load_skill、compact。
 """
 
 import subprocess
@@ -518,7 +518,7 @@ def list_tool_name() -> list:
     在 app.agent_loop 中特殊拦截处理，不经过 TOOL_HANDLERS 分发，但模型
     仍然可以调用它们——system prompt 中声明的工具列表应与 API 声明一致。
 
-    供 context.update_context() 调用，填入 context["enabled_tools"]。
+    供 context.update_session_context() 调用，填入 context["enabled_tools"]。
     """
     return [t["name"] for t in TOOLS]
 

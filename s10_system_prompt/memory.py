@@ -125,8 +125,8 @@ def _rebuild_index() -> None:
     索引格式为 Markdown 列表，每行一条：
         - [name](filename.md) — description
 
-    索引内容会被 app.build_system() 注入 system prompt 的
-    "Memories available:" 段落，让模型知道有哪些可用记忆。
+    索引内容由 context.update_session_context() → memory.read_memory_index()
+    读取后注入 system prompt，让模型知道有哪些可用记忆。
     MEMORY.md 本身不在扫描范围内，避免自引用。
     """
     lines = []
