@@ -27,10 +27,9 @@ except ImportError:
 
 import config
 from constant import WORKDIR, MODEL, CONTEXT_LIMIT
-from skills import list_skills
 from llm_client import client
-from tool import TOOLS, TOOL_HANDLERS
-from hooks import trigger_hooks
+import tools
+import hooks
 import context
 import memory
 
@@ -65,6 +64,7 @@ def agent_loop(messages: list) -> None:
     """
     global rounds_since_todo
     reactive_retries = 0
+    
     memories_content = memory.load_memories(messages)
     memory_turn = (
         len(messages) - 1
@@ -95,8 +95,9 @@ def agent_loop(messages: list) -> None:
             print("[auto compact]")
             messages[:] = context.compact_history(messages)
 
-        # 连续 N 轮未调用 todo_write 时，注入一条系统提醒催促模型更新任务列表
-        if rounds_since_todo >= 3 and messages:
+        # 连续 N 轮未调用 todo_write 时注入提醒。仅在模型已创建过任务列表
+        # 的前提下才提醒，从未创建就不打扰。
+        if rounds_since_todo >= 3 and messages and tools.CURRENT_TODOS:
             messages.append(
                 {"role": "user", "content": "<reminder>Update your todos.</reminder>"}
             )
@@ -120,7 +121,7 @@ def agent_loop(messages: list) -> None:
                 model=MODEL,
                 system=system,
                 messages=messages,
-                tools=TOOLS,
+                tools=tools.TOOLS,
                 max_tokens=8000,
             )
             reactive_retries = 0
@@ -146,7 +147,7 @@ def agent_loop(messages: list) -> None:
             # Stop hook 在循环退出前触发，返回非 None 时可注入一条 user 消息
             # 并 continue 继续循环，让模型基于该消息再产生回复。
             # 典型场景：自动追问（"需要我继续吗？"）、会话摘要注入等。
-            force = trigger_hooks("Stop", messages)
+            force = hooks.trigger_hooks("Stop", messages)
             if force:
                 messages.append({"role": "user", "content": force})
                 continue
@@ -164,7 +165,6 @@ def agent_loop(messages: list) -> None:
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            print(f"\033[36m> {block.name}\033[0m")
 
             if block.name == "compact":
                 # compact 工具是特殊的元操作：直接压缩当前历史，然后 break 跳出
@@ -181,7 +181,7 @@ def agent_loop(messages: list) -> None:
                 break
 
             # hooks 工具执行前
-            blocked = trigger_hooks("PreToolUse", block)
+            blocked = hooks.trigger_hooks("PreToolUse", block)
             if blocked:
                 results.append(
                     {
@@ -192,10 +192,10 @@ def agent_loop(messages: list) -> None:
                 )
                 continue
 
-            handler = TOOL_HANDLERS.get(block.name)
-            output = handler(**block.input) if handler else f"Unknown: {block.name}"
+            output = tools.use_tools(block.name, block.input)
+
             # PostToolUse hook：工具执行后触发，可用于日志记录、结果后处理等
-            trigger_hooks("PostToolUse", block, output)
+            hooks.trigger_hooks("PostToolUse", block, output)
 
             # 模型主动调用了 todo_write，重置提醒计数器，避免重复注入
             if block.name == "todo_write":
@@ -228,7 +228,7 @@ def main() -> None:
             break
 
         # 通知 hooks 用户已提交输入（s09: 会话记录等）
-        trigger_hooks("UserPromptSubmit", query)
+        hooks.trigger_hooks("UserPromptSubmit", query)
 
         history_messages.append({"role": "user", "content": query})
         agent_loop(history_messages)

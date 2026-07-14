@@ -15,7 +15,7 @@
 from typing import Any, Callable
 
 from constant import WORKDIR
-from permission import check_permission
+import permission
 
 
 # ── 事件注册表 ──────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ def permission_hook(block: Any) -> str | None:
     拒绝列表 → 规则检查 + 用户确认 → 放行。
     返回非 None 时 agent_loop 会跳过工具执行并回填拒绝原因给模型。
     """
-    return check_permission(block)
+    return permission.check_permission(block)
 
 
 def log_hook(block: Any) -> str | None:

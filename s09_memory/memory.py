@@ -5,7 +5,7 @@ from pathlib import Path
 
 from constant import MEMORY_DIR, MEMORY_INDEX, MODEL, CONSOLIDATE_THRESHOLD
 from llm_client import client
-from tool import extract_text
+import tools
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -107,7 +107,7 @@ def extract_memories(messages: list) -> None:
         response = client.messages.create(
             model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=800
         )
-        text = extract_text(response.content).strip()
+        text = tools.extract_text(response.content).strip()
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             return
@@ -153,7 +153,7 @@ def consolidate_memories() -> None:
         response = client.messages.create(
             model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=3000
         )
-        text = extract_text(response.content).strip()
+        text = tools.extract_text(response.content).strip()
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             return
@@ -223,7 +223,7 @@ def select_relevant_memories(messages: list, max_items: int = 5) -> list[str]:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
         )
-        text = extract_text(response.content).strip()
+        text = tools.extract_text(response.content).strip()
         match = re.search(r"\[.*?\]", text, re.DOTALL)
         if match:
             indices = json.loads(match.group())
@@ -259,7 +259,7 @@ def load_memories(messages: list) -> str:
     selected_files = select_relevant_memories(messages)
     if not selected_files:
         return ""
-    
+
     parts = ["<relevant_memories>"]
     for filename in selected_files:
         content = read_memory_file(filename)

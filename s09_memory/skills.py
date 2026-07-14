@@ -2,6 +2,7 @@ import yaml
 
 from constant import SKILLS_DIR
 
+
 # 全局技能注册表：模块加载时由 _scan_skills() 一次性填充，
 # 后续查询直接走内存，避免每次 list 都扫一次文件系统。
 SKILL_REGISTRY: dict[str, dict] = {}
@@ -67,3 +68,12 @@ _scan_skills()
 def list_skills() -> str:
     """以 Markdown 列表形式返回所有已注册技能的名称和描述。"""
     return "\n".join(f"- **{s['name']}**: {s['description']}" for s in SKILL_REGISTRY.values())
+
+
+def get_skill(name: str) -> dict | None:
+    """按名称从全局注册表中查找技能，返回包含 name / description / content 的字典。
+
+    O(1) 字典查找，无需访问文件系统。未找到时返回 None，
+    调用方（tools.load_skill）负责将 None 转为错误提示字符串返回给模型。
+    """
+    return SKILL_REGISTRY.get(name)

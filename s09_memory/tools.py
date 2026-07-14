@@ -19,9 +19,9 @@ import ast
 from pathlib import Path
 
 from constant import WORKDIR, MODEL, SUB_SYSTEM
-from skills import SKILL_REGISTRY
 from llm_client import client
-from hooks import trigger_hooks
+import skills
+import hooks
 
 
 def run_bash(command: str) -> str:
@@ -171,6 +171,7 @@ def run_todo_write(todos: list[dict] | str) -> str:
         }[t["status"]]
         lines.append(f"  [{icon}] {t['content']}")
     print("\n".join(lines))
+    print()
     return f"Updated {len(CURRENT_TODOS)} tasks"
 
 
@@ -232,7 +233,7 @@ def spawn_subagent(description: str) -> str:
     Returns:
         子 agent 的最终文本回复；若 30 轮后无文本输出则返回提示信息。
     """
-    print(f"\n\033[35m[Subagent spawned]\033[0m")
+    print("\n\033[35m[Subagent spawned]\033[0m")
 
     # 子 agent 使用全新上下文，不继承主 agent 的对话历史。
     messages = [{"role": "user", "content": description}]
@@ -257,7 +258,7 @@ def spawn_subagent(description: str) -> str:
         for block in response.content:
             if block.type == "tool_use":
                 # PreToolUse hook：允许外部拦截（如权限控制），返回非空则跳过执行。
-                blocked = trigger_hooks("PreToolUse", block)
+                blocked = hooks.trigger_hooks("PreToolUse", block)
                 if blocked:
                     results.append(
                         {
@@ -273,8 +274,7 @@ def spawn_subagent(description: str) -> str:
                 output = handler(**block.input) if handler else f"Unknown: {block.name}"
 
                 # PostToolUse hook：审计、日志等后置处理。
-                trigger_hooks("PostToolUse", block, output)
-                print(f"  \033[90m[sub] {block.name}: {str(output)[:100]}\033[0m")
+                hooks.trigger_hooks("PostToolUse", block, output)
                 results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": output}
                 )
@@ -294,7 +294,8 @@ def spawn_subagent(description: str) -> str:
                     break
         if not result:
             result = "Subagent stopped after 30 turns without final answer."
-    print(f"\033[35m[Subagent done]\033[0m")
+    print("\033[35m[Subagent done]\033[0m")
+    print()
     return result
 
 
@@ -318,7 +319,7 @@ def load_skill(name: str) -> str:
     注册表由 skills._scan_skills() 在模块导入时一次性填充，本函数只做 O(1) 字典查找。
     未找到时返回错误提示字符串而非抛异常，与其余工具函数的约定保持一致。
     """
-    skill = SKILL_REGISTRY.get(name)
+    skill = skills.get_skill(name)
     if not skill:
         return f"Skill not found: {name}"
     return skill["content"]
@@ -507,3 +508,20 @@ SUB_TOOL_HANDLERS = {
     "edit_file": run_edit,
     "glob": run_glob,
 }
+
+
+def use_tools(name: str, input: dict) -> str:
+    """主 agent 工具调度的统一入口：按名查找 handler 并执行。
+
+    从 TOOL_HANDLERS 字典中查找对应函数，将 input ** 解包传入。
+    未注册的工具名返回 "Unknown: {name}" 而非抛异常，让模型自行纠正。
+
+    Args:
+        name: 工具名（"bash"、"read_file" 等）。
+        input: 模型传入的参数字典（如 {"command": "ls"}）。
+
+    Returns:
+        工具输出的字符串；未注册时返回 "Unknown: {name}"。
+    """
+    handler = TOOL_HANDLERS.get(name)
+    return handler(**input) if handler else f"Unknown: {name}"
