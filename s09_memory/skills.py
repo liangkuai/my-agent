@@ -67,7 +67,9 @@ _scan_skills()
 
 def list_skills() -> str:
     """以 Markdown 列表形式返回所有已注册技能的名称和描述。"""
-    return "\n".join(f"- **{s['name']}**: {s['description']}" for s in SKILL_REGISTRY.values())
+    return "\n".join(
+        f"- **{s['name']}**: {s['description']}" for s in SKILL_REGISTRY.values()
+    )
 
 
 def get_skill(name: str) -> dict | None:

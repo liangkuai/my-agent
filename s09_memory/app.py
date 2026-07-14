@@ -64,7 +64,7 @@ def agent_loop(messages: list) -> None:
     """
     global rounds_since_todo
     reactive_retries = 0
-    
+
     memories_content = memory.load_memories(messages)
     memory_turn = (
         len(messages) - 1
@@ -120,7 +120,7 @@ def agent_loop(messages: list) -> None:
             response = client.messages.create(
                 model=MODEL,
                 system=system,
-                messages=messages,
+                messages=request_messages,
                 tools=tools.TOOLS,
                 max_tokens=8000,
             )

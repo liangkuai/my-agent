@@ -12,4 +12,3 @@ override=True：.env 中的值覆盖系统环境变量已存在的同名变量�
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
-
