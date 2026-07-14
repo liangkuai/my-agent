@@ -1,5 +1,5 @@
 """
-s09 Context Compact —— 带上下文压缩的编码 Agent REPL 应用。
+s10 Context Compact —— 带上下文压缩的编码 Agent REPL 应用。
 
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
@@ -26,8 +26,9 @@ except ImportError:
     pass
 
 import config
-from constant import WORKDIR, MODEL, CONTEXT_LIMIT
+from constant import MODEL, CONTEXT_LIMIT
 from llm_client import client
+import system_prompt
 import tools
 import hooks
 import context
@@ -40,23 +41,12 @@ import memory
 rounds_since_todo = 0
 
 
-def build_system() -> str:
-    index = memory.read_memory_index()
-    memories_section = f"\n\nMemories available:\n{index}" if index else ""
-    return (
-        f"You are a coding agent at {WORKDIR}."
-        f"{memories_section}\n"
-        "Relevant memories are injected below. Respect user preferences from memory.\n"
-        "When the user says 'remember' or expresses a clear preference, extract it as a memory."
-    )
-
-
 # prompt_too_long 时的最大重试次数：首次报错 → reactive_compact → 重试，
 # 若仍报错则直接抛出，避免无限循环
 MAX_REACTIVE_RETRIES = 1
 
 
-def agent_loop(messages: list) -> None:
+def agent_loop(messages: list, session_context: dict) -> None:
     """反复「调用模型 → 执行工具 → 回填结果」，直到模型不再请求工具为止。
 
     每轮检查是否需要注入 todo 提醒；退出前触发 Stop hook，允许外部注入
@@ -72,7 +62,7 @@ def agent_loop(messages: list) -> None:
         else None
     )
 
-    system = build_system()
+    system = system_prompt.get_system_prompt(session_context)
 
     while True:
         pre_compress = [
@@ -178,6 +168,9 @@ def agent_loop(messages: list) -> None:
                     }
                 )
                 messages.append({"role": "user", "content": results})
+
+                session_context = context.update_context(session_context, messages)
+                system = system_prompt.get_system_prompt(session_context)
                 break
 
             # hooks 工具执行前
@@ -192,7 +185,7 @@ def agent_loop(messages: list) -> None:
                 )
                 continue
 
-            output = tools.use_tools(block.name, block.input)
+            output = tools.use_tool(block.name, block.input)
 
             # PostToolUse hook：工具执行后触发，可用于日志记录、结果后处理等
             hooks.trigger_hooks("PostToolUse", block, output)
@@ -210,28 +203,33 @@ def agent_loop(messages: list) -> None:
             # 将收集到的 tool_result 以 user 角色回填，进入下一轮循环
             messages.append({"role": "user", "content": results})
 
+            session_context = context.update_context(session_context, messages)
+            system = system_prompt.get_system_prompt(session_context)
+
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s09: Memory")
+    print("s10: System Prompt")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
+    session_context = context.update_context({}, history_messages)
 
     while True:
         try:
-            query = input("\033[36ms09 >> \033[0m")
+            query = input("\033[36ms10 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s09: 会话记录等）
+        # 通知 hooks 用户已提交输入（s10: 会话记录等）
         hooks.trigger_hooks("UserPromptSubmit", query)
 
         history_messages.append({"role": "user", "content": query})
-        agent_loop(history_messages)
+        agent_loop(history_messages, session_context)
+        session_context = context.update_context({}, history_messages)
 
         # agent_loop 结束后，末尾必为 assistant 消息。
         # content 为内容块列表时只挑文本块展示（工具调用块由 run_todo_write 等函数

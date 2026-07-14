@@ -21,14 +21,9 @@ import json
 from typing import Any
 from pathlib import Path
 
-from constant import (
-    MODEL,
-    PERSIST_THRESHOLD,
-    TOOL_RESULTS_DIR,
-    KEEP_RECENT,
-    TRANSCRIPT_DIR,
-)
+import constant
 from llm_client import client
+import tools
 
 
 def estimate_size(msgs: list):
@@ -145,10 +140,10 @@ def micro_compact(messages: list) -> list:
     更占空间，所以只压缩超过该阈值的结果。
     """
     tool_results = collect_tool_results(messages)
-    if len(tool_results) <= KEEP_RECENT:
+    if len(tool_results) <= constant.KEEP_RECENT:
         return messages
     # 对最近 N 条之外的 tool_result，若内容较长则替换为占位文本
-    for _, _, block in tool_results[:-KEEP_RECENT]:
+    for _, _, block in tool_results[:-constant.KEEP_RECENT]:
         if len(block.get("content", "")) > 120:
             block["content"] = "[Earlier tool result compacted. Re-run if needed.]"
     return messages
@@ -166,10 +161,10 @@ def persist_large_output(tool_use_id: str, output: str) -> str:
     返回的占位文本包含文件路径 + 前 2000 字符预览，模型看到此文本后可选择
     用读文件工具获取完整内容。
     """
-    if len(output) <= PERSIST_THRESHOLD:
+    if len(output) <= constant.PERSIST_THRESHOLD:
         return output
-    TOOL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = TOOL_RESULTS_DIR / f"{tool_use_id}.txt"
+    constant.TOOL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = constant.TOOL_RESULTS_DIR / f"{tool_use_id}.txt"
     if not path.exists():
         path.write_text(output)
     return f"<persisted-output>\nFull output: {path}\nPreview:\n{output[:2000]}\n</persisted-output>"
@@ -211,7 +206,7 @@ def tool_result_budget(messages: list, max_bytes: int = 200_000) -> list:
         if total <= max_bytes:
             break
         content = str(block.get("content", ""))
-        if len(content) <= PERSIST_THRESHOLD:
+        if len(content) <= constant.PERSIST_THRESHOLD:
             continue
         tid = block.get("tool_use_id", "unknown")
         block["content"] = persist_large_output(tid, content)
@@ -227,8 +222,8 @@ def write_transcript(messages: list) -> Path:
     包含不可直接序列化的类型），降级为 str() 而非抛出异常。
     文件名带时间戳以便按时间排序。
     """
-    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
-    path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
+    constant.TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    path = constant.TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
     with path.open("w") as f:
         for msg in messages:
             f.write(json.dumps(msg, default=str) + "\n")
@@ -252,7 +247,7 @@ def summarize_history(messages: list) -> str:
         + conversation
     )
     response = client.messages.create(
-        model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=2000
+        model=constant.MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=2000
     )
     return (
         "\n".join(
@@ -306,3 +301,16 @@ def reactive_compact(messages: list) -> list:
         {"role": "user", "content": f"[Reactive compact]\n\n{summary}"},
         *messages[tail_start:],
     ]
+
+
+def update_context(context: dict, messages: list) -> dict:
+    memories = ""
+    if constant.MEMORY_INDEX.exists():
+        content = constant.MEMORY_INDEX.read_text().strip()
+        if content:
+            memories = content
+    return {
+        "enabled_tools": tools.list_tool_name(),
+        "workspace": str(constant.WORKDIR),
+        "memories": memories,
+    }

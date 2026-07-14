@@ -510,7 +510,11 @@ SUB_TOOL_HANDLERS = {
 }
 
 
-def use_tools(name: str, input: dict) -> str:
+def list_tool_name() -> list:
+    return list(TOOL_HANDLERS.keys())
+
+
+def use_tool(name: str, input: dict) -> str:
     """主 agent 工具调度的统一入口：按名查找 handler 并执行。
 
     从 TOOL_HANDLERS 字典中查找对应函数，将 input ** 解包传入。
