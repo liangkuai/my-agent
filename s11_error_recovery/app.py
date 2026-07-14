@@ -126,7 +126,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
         except Exception as e:
             # prompt_too_long → 上下文太长，API 拒绝请求。
             # 用 reactive_compact 保留尾部最近消息并压缩其余，然后重试。
-            # 最多重试 MAX_REACTIVE_RETRIES 次，避免死循环。
+            # 仅尝试一次 reactive_compact，通过 has_attempted_reactive_compact 标志防止重复压缩。
             if recovery.is_prompt_too_long_error(e):
                 if not state.has_attempted_reactive_compact:
                     print("[reactive compact]")

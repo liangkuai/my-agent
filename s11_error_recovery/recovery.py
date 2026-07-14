@@ -66,7 +66,7 @@ def retry_delay(attempt: int, retry_after: float | None = None) -> float:
     return base + jitter
 
 
-def with_retry(fn: Callable, state: RecoveryState):
+def with_retry(fn: Callable, state: RecoveryState) -> None:
     """带智能重试的 LLM API 调用包装器，错误恢复模块的核心入口。
 
     所有需要容错的 LLM 调用（主/子 agent）都应通过此函数封装。
