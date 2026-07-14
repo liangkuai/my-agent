@@ -66,8 +66,16 @@ KEEP_RECENT = 3
 CONTEXT_LIMIT = 50000
 
 
+# 记忆持久化目录。每条记忆一个 .md 文件（YAML frontmatter + Markdown 正文），
+# 由 memory 模块统一管理读写与索引。
 MEMORY_DIR = WORKDIR / ".memory"
 
+# 记忆索引文件，位于 MEMORY_DIR 下。由 _rebuild_index() 自动维护，
+# 内容为 Markdown 链接列表（如 "- [name](file.md) — description"）。
+# app.build_system() 将其注入 system prompt 的 "Memories available:" 段落。
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 
+# 记忆合并触发阈值。当记忆文件数 >= 此值时，consolidate_memories()
+# 调用 LLM 合并重复、删除过时条目，保持记忆库精简。
+# 设为 10：积累约 10 条记忆后开始定期整理，避免过早合并。
 CONSOLIDATE_THRESHOLD = 10
