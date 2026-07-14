@@ -50,7 +50,9 @@ def assemble_system_prompt(context: dict) -> str:
     # 动态段落：工具列表、工作目录 —— 从 context 取值，反映运行时实际状态
     tools_list = context.get("enabled_tools", [])
     sections.append(f"Available tools: {', '.join(tools_list)}.")
-    sections.append(f"Working directory: {context.get('workspace', str(constant.WORKDIR))}")
+    sections.append(
+        f"Working directory: {context.get('workspace', str(constant.WORKDIR))}"
+    )
 
     # 可选段落：记忆索引 —— 仅在记忆库非空时注入
     memories = context.get("memories", "")
@@ -69,8 +71,8 @@ def assemble_system_prompt(context: dict) -> str:
 #
 # 缓存失效条件：MEMORY_INDEX 文件内容变化（提取或合并记忆后索引重建）。
 
-_last_context_key = None   # 上一次 context 序列化后的规范化 JSON 字符串
-_last_prompt = None        # 上一次生成的 system prompt 完整文本
+_last_context_key = None  # 上一次 context 序列化后的规范化 JSON 字符串
+_last_prompt = None  # 上一次生成的 system prompt 完整文本
 
 
 def get_system_prompt(context: dict) -> str:

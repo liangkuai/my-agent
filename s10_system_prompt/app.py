@@ -177,7 +177,9 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 )
                 messages.append({"role": "user", "content": results})
 
-                session_context = context.update_session_context(session_context, messages)
+                session_context = context.update_session_context(
+                    session_context, messages
+                )
                 system = system_prompt.get_system_prompt(session_context)
                 break
 
@@ -237,7 +239,9 @@ def main() -> None:
 
         history_messages.append({"role": "user", "content": query})
         agent_loop(history_messages, session_context)
-        session_context = context.update_session_context(session_context, history_messages)
+        session_context = context.update_session_context(
+            session_context, history_messages
+        )
 
         # agent_loop 结束后，末尾必为 assistant 消息。
         # content 为内容块列表时只挑文本块展示（工具调用块由 run_todo_write 等函数

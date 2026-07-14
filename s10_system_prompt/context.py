@@ -146,7 +146,7 @@ def micro_compact(messages: list) -> list:
     if len(tool_results) <= constant.KEEP_RECENT:
         return messages
     # 对最近 N 条之外的 tool_result，若内容较长则替换为占位文本
-    for _, _, block in tool_results[:-constant.KEEP_RECENT]:
+    for _, _, block in tool_results[: -constant.KEEP_RECENT]:
         if len(block.get("content", "")) > 120:
             block["content"] = "[Earlier tool result compacted. Re-run if needed.]"
     return messages
@@ -250,7 +250,9 @@ def summarize_history(messages: list) -> str:
         + conversation
     )
     response = client.messages.create(
-        model=constant.MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=2000
+        model=constant.MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000,
     )
     return (
         "\n".join(
