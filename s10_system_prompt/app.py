@@ -4,7 +4,7 @@ s10 Context Compact —— 带上下文压缩的编码 Agent REPL 应用。
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
   agent_loop()  → 核心循环：压缩 → 调用 LLM → 执行工具 → 回填结果，直到模型停止请求工具
-  build_system()→ 构建 system prompt，注入可用 skill 列表
+  system_prompt.get_system_prompt()→ 构建 system prompt（模板片段 + context 拼接，带缓存）
 
 上下文压缩管线（每轮 agent_loop 开始时依次执行）：
   tool_result_budget → 单轮 tool_result 总大小超限时，持久化最大的结果到磁盘
@@ -56,6 +56,10 @@ def agent_loop(messages: list, session_context: dict) -> None:
     reactive_retries = 0
 
     memories_content = memory.load_memories(messages)
+    # 只将记忆注入到本轮对话的首条 user 消息之前（即最新一条纯文本 user 消息）。
+    # 如果最新一条 user 消息的 content 是 list（含 tool_result 块），说明
+    # 上一轮模型刚执行完工具，本轮尚未加入新 user 消息——此时 memory_turn 为 None，
+    # 记忆将在下一轮用户真正提交文本输入时才注入。
     memory_turn = (
         len(messages) - 1
         if messages and isinstance(messages[-1].get("content"), str)
@@ -65,6 +69,10 @@ def agent_loop(messages: list, session_context: dict) -> None:
     system = system_prompt.get_system_prompt(session_context)
 
     while True:
+        # 在压缩前拍一份消息历史快照（统一转换为纯 dict 形式）。
+        # 压缩管线（tool_result_budget / snip / micro / compact_history）会
+        # 修改 messages 中的 block 内容或裁切消息，而 extract_memories 需要
+        # 压缩前的完整对话才能提取准确的记忆——所以提前保存。
         pre_compress = [
             m
             if isinstance(m, dict)
@@ -114,7 +122,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 tools=tools.TOOLS,
                 max_tokens=8000,
             )
-            reactive_retries = 0
+            reactive_retries = 0  # API 调用成功 → 重置重试计数，后续压缩仍可重试
         except Exception as e:
             # prompt_too_long → 上下文太长，API 拒绝请求。
             # 用 reactive_compact 保留尾部最近消息并压缩其余，然后重试。

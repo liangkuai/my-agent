@@ -81,7 +81,9 @@ def snip_compact(messages: list, max_messages: int = 50) -> list:
       否则模型会因为 tool_result 找不到对应的 tool_use 而产生困惑。
 
     Returns:
-        裁剪后的消息列表（原地修改了中间部分，但返回新列表）。
+        裁剪后的消息列表（通过切片拼接返回全新列表；原始 messages 列表对象
+        未被替换，但调用方 app.agent_loop 通过 messages[:] = ... 写回后
+        等效于原地替换）。
     """
     if len(messages) <= max_messages:
         return messages
@@ -304,6 +306,16 @@ def reactive_compact(messages: list) -> list:
 
 
 def update_context(context: dict, messages: list) -> dict:
+    """构建 system_prompt.get_system_prompt() 所需的上下文字典。
+
+    当前仅收集三个字段（不依赖传入的 context 或 messages，为后续扩展预留参数）：
+    - enabled_tools: 已注册工具名列表（用于 system prompt 工具段落）
+    - workspace: 当前工作目录的绝对路径字符串
+    - memories: MEMORY_INDEX 文件的全文内容（空字符串表示无记忆）
+
+    调用方（app.agent_loop / app.main）在每次 agent_loop 前后调用此函数，
+    以确保 system prompt 反映最新的工具集和记忆索引。
+    """
     memories = ""
     if constant.MEMORY_INDEX.exists():
         content = constant.MEMORY_INDEX.read_text().strip()

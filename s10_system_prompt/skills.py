@@ -1,3 +1,21 @@
+"""
+Skill 管理模块 —— 扫描、注册和检索可用的 Agent 技能。
+
+每个技能以子目录形式存放在 SKILLS_DIR 下：
+    skills/
+      my-skill/
+        SKILL.md   ← YAML frontmatter（name, description）+ Markdown 正文
+
+模块导入时调用 _scan_skills() 一次性遍历文件系统填充 SKILL_REGISTRY，
+后续查询命中内存缓存，不需要再访问磁盘。
+
+函数接口：
+  list_skills()            → str            所有技能的 Markdown 列表
+  get_skill(name)          → dict | None    按名 O(1) 查找（name / description / content）
+数据接口：
+  SKILL_REGISTRY           → dict[str, dict] tools.load_skill 直接从此字典取值
+"""
+
 import yaml
 
 from constant import SKILLS_DIR

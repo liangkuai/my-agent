@@ -62,7 +62,7 @@ def safe_path(p: str) -> Path:
     2. is_relative_to() 确保结果仍在 WORKDIR 子树内。
 
     两次 resolve（WORKDIR 和拼接结果各一次）是必须的——
-    is_relative_to 是纯字符串前缀比较，只有两边都是规范化的真实路径时结果才可靠。
+    只有两边都经过 resolve() 规范化后，is_relative_to 的结果才可靠。
     如果路径越界则抛出 ValueError，由调用方（各 run_*）捕获并转为 "Error: ..." 返回给模型。
 
     Raises:
@@ -142,8 +142,8 @@ def run_glob(pattern: str) -> str:
 
 
 # === 任务管理 ===
-# CURRENT_TODOS 是 agent_loop 生命周期内唯一的可变会话状态。
-# run_todo_write 负责更新，agent_loop 在每次 todo_write 调用后重置未使用工具提醒计数器。
+# CURRENT_TODOS 是进程生命周期内唯一的可变会话状态。
+# run_todo_write 负责更新，agent_loop 在每次 todo_write 调用后重置提醒计数器。
 CURRENT_TODOS: list[dict] = []
 
 
@@ -327,7 +327,7 @@ def load_skill(name: str) -> str:
 
 # =============================================================================
 #  工具定义：声明每个工具的名称、描述和参数 schema（Anthropic Tool Use 格式）。
-#  TOOLS        → 提供给主 agent，包含全部 7 个工具。
+#  TOOLS        → 提供给主 agent，包含全部 9 个工具。
 #  SUB_TOOLS    → 提供给子 agent，仅含 5 个基础文件/shell 工具（不含 todo_write 和 task）。
 #  TOOL_HANDLERS / SUB_TOOL_HANDLERS → 把工具名映射到对应的 Python 函数。
 # =============================================================================
@@ -511,6 +511,11 @@ SUB_TOOL_HANDLERS = {
 
 
 def list_tool_name() -> list:
+    """返回主 agent 所有已注册工具的名称列表。
+
+    供 context.update_context() 调用，填入 context["enabled_tools"]。
+    顺序与 TOOL_HANDLERS 的插入顺序一致。
+    """
     return list(TOOL_HANDLERS.keys())
 
 
