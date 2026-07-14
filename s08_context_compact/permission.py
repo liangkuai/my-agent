@@ -17,9 +17,9 @@ from constant import WORKDIR
 # ── 拒绝列表 ────────────────────────────────────────────────────────
 # 命中即直接拒绝，模型看到 "Permission denied." 后可以调整策略。
 #
-# 注意：这里用的是子串匹配，远不是真正的安全边界——多空格、`;\nrm`、编码变体、
-# 大小写等都可以绕过。仅作为 CLI demo 的第一道粗筛，生产环境必须改用沙箱／
-# 容器隔离来执行不可信命令。
+# 注意：这里使用子串匹配，并非可靠的安全边界——多余空格、`;\nrm`、编码变体、
+# 大小写变形等均可绕过。仅作为 CLI demo 的第一道粗筛，生产环境必须使用沙箱
+# 或容器隔离来执行不可信命令。
 
 DENY_LIST = [
     "rm -rf /",
@@ -106,12 +106,14 @@ def check_permission(block: Any) -> str | None:
         reason = check_deny_list(block.input.get("command", ""))
         if reason:
             print(f"\033[31m⛔ {reason}\033[0m")
+            print()
             return "Permission denied by deny list"
 
     # 第二层：规则检查 —— 命中后进入用户交互确认
     reason = check_rules(block.name, block.input)
     if reason:
         decision = ask_user(block.name, block.input, reason)
+        print()
         if decision == "deny":
             return "Permission denied by user"
 

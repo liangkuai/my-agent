@@ -9,7 +9,7 @@ tool_use ↔ tool_result 配对的前提下减少上下文体积。
   1. tool_result_budget → 单轮 tool_result 总大小超出 max_bytes 时，贪心持久化最大的结果到磁盘
   2. snip_compact       → 消息数超出 max_messages 时，裁剪中间旧消息保留头尾（保持配对完整）
   3. micro_compact      → 保留最近 KEEP_RECENT 条 tool_result，其余长内容替换为占位文本
-  4. compact_history    → 全部历史写入转录文件，用 LLM 摘要完全替代上下文（"硬重启"）
+  4. compact_history    → 全部历史写入转录文件，用 LLM 摘要完全替代上下文（重量级压缩）
   5. reactive_compact   → 保留尾部约 5 条消息，其余用 LLM 摘要替代（API 报 prompt_too_long 时触发）
 
 工具函数：
@@ -41,10 +41,10 @@ def estimate_size(msgs: list):
 
 
 def _block_type(block: Any):
-    """获取 content 块（dict 或对象）的 type 字段，兼容两种表示形式。
+    """获取 content 块的 type 字段，兼容 dict 和 SDK 富对象两种表示形式。
 
-    消息历史中的 content 元素可能是 dict（序列化后）或 SDK 返回的富对象
-    （如 ToolUseBlock），这里统一取 type 字段以消除调用方的心智负担。
+    消息历史中的 content 元素可能是 dict（反序列化后）或 SDK 返回的富对象
+    （如 ToolUseBlock），这里统一取 type 字段，调用方无需关心实际类型。
     """
     return (
         block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
@@ -265,7 +265,7 @@ def summarize_history(messages: list) -> str:
 
 
 def compact_history(messages: list) -> list:
-    """全量压缩（硬重启）：将全部历史写入转录文件，用 LLM 摘要完全替代上下文。
+    """全量压缩：将全部历史写入转录文件，用 LLM 摘要完全替代上下文。
 
     这是最重的压缩手段。返回的新消息列表中只有一条 user 消息，相当于
     告诉模型"之前的对话已经总结完毕，请基于摘要继续工作"。

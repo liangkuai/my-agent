@@ -16,7 +16,7 @@ import config
 # =============================================================================
 
 # resolve() 得到规范化的绝对路径：safe_path 内部的 is_relative_to 越界判断
-# 依赖两边都是真实路径，这里先把根目录定死，工具层就有了可靠的安全边界。
+# 要求两边都是真实路径，这里预先 resolve WORKDIR，工具层即可基于此构建可靠的安全边界。
 WORKDIR = Path.cwd().resolve()
 
 # skill 定义文件存放目录，list_skills / load_skill 从此处扫描
