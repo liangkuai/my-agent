@@ -310,6 +310,7 @@ def spawn_subagent(description: str) -> str:
 
                 # PostToolUse hook：审计、日志等后置处理。
                 trigger_hooks("PostToolUse", block, output)
+                print(f"  \033[90m[sub] {block.name}: {str(output)[:100]}\033[0m")
                 results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": output}
                 )
