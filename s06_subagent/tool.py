@@ -268,7 +268,7 @@ def spawn_subagent(description: str) -> str:
     Returns:
         子 agent 的最终文本回复；若 30 轮后无文本输出则返回提示信息。
     """
-    print(f"\n\033[35m[Subagent spawned]\033[0m")
+    print("\n\033[35m[Subagent spawned]\033[0m")
 
     # 子 agent 使用全新上下文，不继承主 agent 的对话历史。
     messages = [{"role": "user", "content": description}]
@@ -331,7 +331,7 @@ def spawn_subagent(description: str) -> str:
         if not result:
             result = "Subagent stopped after 30 turns without final answer."
 
-    print(f"\033[35m[Subagent done]\033[0m")
+    print("\033[35m[Subagent done]\033[0m")
     print()
     return result
 
