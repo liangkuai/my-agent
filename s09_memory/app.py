@@ -192,7 +192,7 @@ def agent_loop(messages: list) -> None:
                 )
                 continue
 
-            output = tools.use_tools(block.name, block.input)
+            output = tools.use_tool(block.name, block.input)
 
             # PostToolUse hook：工具执行后触发，可用于日志记录、结果后处理等
             hooks.trigger_hooks("PostToolUse", block, output)
