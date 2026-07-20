@@ -337,7 +337,7 @@ def run_create_task(
 
 def run_list_tasks() -> str:
     all_tasks = tasks.list_tasks()
-    if not tasks:
+    if not all_tasks:
         return "No tasks. Use create_task to add some."
     lines = []
     for t in all_tasks:

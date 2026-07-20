@@ -7,9 +7,6 @@ from pathlib import Path
 import constant
 
 
-constant.TASKS_DIR.mkdir(exist_ok=True)
-
-
 @dataclass
 class Task:
     id: str
@@ -25,6 +22,7 @@ def _task_path(task_id: str) -> Path:
 
 
 def save_task(task: Task):
+    constant.TASKS_DIR.mkdir(parents=True, exist_ok=True)
     _task_path(task.id).write_text(json.dumps(asdict(task), indent=2))
 
 
