@@ -90,8 +90,17 @@ def start_background_task(block: Any) -> str:
     cmd = block.input.get("command", block.name)
 
     def worker():
-        """后台执行体：调用工具，将结果写入共享字典。"""
-        result = tools.use_tool(block.name, block.input)
+        """后台执行体：调用工具，将结果写入共享字典。
+
+        用 try/except 包裹 tools.use_tool()，防止工具调用抛出未预期的异常
+        （如 TypeError、OSError 等非 "Error: ..." 字符串能覆盖的错误）导致
+        worker 静默死亡。异常时以 "Error: ..." 字符串写入结果，确保
+        collect_background_results 总能收到完成通知，不会永久泄漏任务条目。
+        """
+        try:
+            result = tools.use_tool(block.name, block.input)
+        except Exception as e:
+            result = f"Error: background task failed — {e}"
         # 持锁写入两个共享字典，确保与 collect_background_results 的 pop 操作互斥
         with background_lock:
             background_tasks[bg_id]["status"] = "completed"
@@ -119,8 +128,9 @@ def collect_background_results() -> list[str]:
     3. 截取前 200 字符作为摘要，包装为 <task_notification> XML
     4. 打印绿色终端提示
 
-    线程安全策略：先持锁收集 ID 列表后释放，再逐任务持锁 pop——
-    最小化单次持锁时间，避免阻塞 worker 线程写入。
+    线程安全策略：分两阶段操作，将快路径（字典读写）与慢路径（字符串
+    格式化和终端 I/O）分离——持锁只做 dict 扫描/pop，释放锁后再构建 XML
+    和打印，避免 worker 线程因等待终端输出而被阻塞。
 
     Returns:
         <task_notification> XML 字符串列表，以 text 块追加到 user 消息中。
