@@ -299,6 +299,8 @@ def main() -> None:
             for block in msg["content"]:
                 if getattr(block, "type", None) == "text":
                     print(block.text)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    print(block.get("text", ""))
         print()
 
 

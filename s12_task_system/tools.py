@@ -22,6 +22,7 @@ from constant import WORKDIR, MODEL, SUB_SYSTEM
 from llm_client import client
 import skills
 import hooks
+import tasks
 
 
 def run_bash(command: str) -> str:
@@ -325,6 +326,43 @@ def load_skill(name: str) -> str:
     return skill["content"]
 
 
+def run_create_task(
+    subject: str, description: str = "", blockedBy: list[str] | None = None
+) -> str:
+    task = tasks.create_task(subject, description, blockedBy)
+    deps = f" (blockedBy: {', '.join(blockedBy)})" if blockedBy else ""
+    print(f"  \033[34m[create] {task.subject}{deps}\033[0m")
+    return f"Created {task.id}: {task.subject}{deps}"
+
+
+def run_list_tasks() -> str:
+    all_tasks = tasks.list_tasks()
+    if not tasks:
+        return "No tasks. Use create_task to add some."
+    lines = []
+    for t in all_tasks:
+        icon = {"pending": "○", "in_progress": "●", "completed": "✓"}.get(t.status, "?")
+        deps = f" (blockedBy: {', '.join(t.blockedBy)})" if t.blockedBy else ""
+        owner = f" [{t.owner}]" if t.owner else ""
+        lines.append(f"  {icon} {t.id}: {t.subject} [{t.status}]{owner}{deps}")
+    return "\n".join(lines)
+
+
+def run_get_task(task_id: str) -> str:
+    try:
+        return tasks.get_task(task_id)
+    except FileNotFoundError:
+        return f"Error: Task {task_id} not found"
+
+
+def run_claim_task(task_id: str) -> str:
+    return tasks.claim_task(task_id, owner="agent")
+
+
+def run_complete_task(task_id: str) -> str:
+    return tasks.complete_task(task_id)
+
+
 # =============================================================================
 #  工具定义：声明每个工具的名称、描述和参数 schema（Anthropic Tool Use 格式）。
 #  TOOLS        → 提供给主 agent，包含全部 9 个工具。
@@ -429,6 +467,51 @@ TOOLS = [
         "description": "Summarize earlier conversation to free context space.",
         "input_schema": {"type": "object", "properties": {"focus": {"type": "string"}}},
     },
+    {
+        "name": "create_task",
+        "description": "Create a new task with optional blockedBy dependencies.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string"},
+                "description": {"type": "string"},
+                "blockedBy": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["subject"],
+        },
+    },
+    {
+        "name": "list_tasks",
+        "description": "List all tasks with status, owner, and dependencies.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_task",
+        "description": "Get full details of a specific task by ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "claim_task",
+        "description": "Claim a pending task. Sets owner, changes status to in_progress.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "complete_task",
+        "description": "Complete an in-progress task. Reports unblocked downstream tasks.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
 ]
 
 
@@ -442,6 +525,11 @@ TOOL_HANDLERS = {
     "todo_write": run_todo_write,
     "task": spawn_subagent,
     "load_skill": load_skill,
+    "create_task": run_create_task,
+    "list_tasks": run_list_tasks,
+    "get_task": run_get_task,
+    "claim_task": run_claim_task,
+    "complete_task": run_complete_task,
 }
 
 

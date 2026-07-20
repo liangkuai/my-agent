@@ -124,3 +124,6 @@ BASE_DELAY_MS = 500
 # 达到此次数后 with_retry() 切换到 FALLBACK_MODEL（若已配置），
 # 避免长时间卡在过载的主模型上。
 MAX_CONSECUTIVE_529 = 3
+
+
+TASKS_DIR = WORKDIR / ".tasks"
