@@ -264,7 +264,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s11: Error Recovery")
+    print("s12: Task System")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
@@ -272,14 +272,14 @@ def main() -> None:
 
     while True:
         try:
-            query = input("\033[36ms11 >> \033[0m")
+            query = input("\033[36ms12 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s11: 会话记录等）
+        # 通知 hooks 用户已提交输入（s12: 会话记录等）
         hooks.trigger_hooks("UserPromptSubmit", query)
 
         turn_start = len(history_messages)
