@@ -25,7 +25,7 @@ import hooks
 import tasks
 
 
-def run_bash(command: str) -> str:
+def run_bash(command: str, run_in_background: bool = False) -> str:
     """执行模型请求的 shell 命令，返回 stdout+stderr 合并后的字符串。
 
     设计要点：
@@ -398,7 +398,10 @@ TOOLS = [
         "description": "Run a shell command.",
         "input_schema": {
             "type": "object",
-            "properties": {"command": {"type": "string"}},
+            "properties": {
+                "command": {"type": "string"},
+                "run_in_background": {"type": "boolean"},
+            },
             "required": ["command"],
         },
     },

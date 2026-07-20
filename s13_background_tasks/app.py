@@ -1,5 +1,5 @@
 """
-s12 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
+s13 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
 
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
@@ -25,6 +25,8 @@ try:
 except ImportError:
     pass
 
+from typing import Any
+
 import config
 import constant
 from llm_client import client
@@ -34,12 +36,72 @@ import hooks
 import context
 import memory
 import recovery
+import tasks
+import threading
 
 
 # 自上次 todo_write 调用以来已完成的 round 数。
 # agent_loop 每轮 +1；todo_write 调用时清零。达到阈值时向模型注入提醒，
 # 防止模型长时间不更新任务列表（例如沉浸在一连串 bash/read 调用中）。
 rounds_since_todo = 0
+
+
+_bg_counter = 0
+background_tasks: dict[str, dict] = {}  # bg_id → {tool_use_id, command, status}
+background_results: dict[str, str] = {}  # bg_id → output
+background_lock = threading.Lock()
+
+
+def start_background_task(block: Any) -> str:
+    global _bg_counter
+    _bg_counter += 1
+    bg_id = f"bg_{_bg_counter:04d}"
+    cmd = block.input.get("command", block.name)
+
+    def worker():
+        result = tools.use_tool(block.name, block.input)
+        with background_lock:
+            background_tasks[bg_id]["status"] = "completed"
+            background_results[bg_id] = result
+
+    with background_lock:
+        background_tasks[bg_id] = {
+            "tool_use_id": block.id,
+            "command": cmd,
+            "status": "running",
+        }
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    print(f"  \033[33m[background] dispatched {bg_id}: {cmd[:40]}\033[0m")
+    return bg_id
+
+
+def collect_background_results() -> list[str]:
+    with background_lock:
+        ready_ids = [
+            bid
+            for bid, task in background_tasks.items()
+            if task["status"] == "completed"
+        ]
+    notifications = []
+    for bg_id in ready_ids:
+        with background_lock:
+            task = background_tasks.pop(bg_id)
+            output = background_results.pop(bg_id, "")
+        summary = output[:200] if len(output) > 200 else output
+        notifications.append(
+            f"<task_notification>\n"
+            f"  <task_id>{bg_id}</task_id>\n"
+            f"  <status>completed</status>\n"
+            f"  <command>{task['command']}</command>\n"
+            f"  <summary>{summary}</summary>\n"
+            f"</task_notification>"
+        )
+        print(
+            f"  \033[32m[background done] {bg_id}: "
+            f"{task['command'][:40]} ({len(output)} chars)\033[0m"
+        )
+    return notifications
 
 
 def agent_loop(messages: list, session_context: dict) -> None:
@@ -240,23 +302,45 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 )
                 continue
 
-            output = tools.use_tool(block.name, block.input)
+            if tasks.should_run_background(block.name, block.input):
+                bg_id = start_background_task(block)
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": f"[Background task {bg_id} started] "
+                        f"Command: {block.input.get('command', '')}. "
+                        f"Result will be available when complete.",
+                    }
+                )
+            else:
+                output = tools.use_tool(block.name, block.input)
 
-            # PostToolUse hook：工具执行后触发，可用于日志记录、结果后处理等
-            hooks.trigger_hooks("PostToolUse", block, output)
+                # PostToolUse hook：工具执行后触发，可用于日志记录、结果后处理等
+                hooks.trigger_hooks("PostToolUse", block, output)
 
-            # 模型主动调用了 todo_write，重置提醒计数器，避免重复注入
-            if block.name == "todo_write":
-                rounds_since_todo = 0
+                # 模型主动调用了 todo_write，重置提醒计数器，避免重复注入
+                if block.name == "todo_write":
+                    rounds_since_todo = 0
 
-            # tool_use_id 必须与请求一一对应，模型据此匹配结果
-            results.append(
-                {"type": "tool_result", "tool_use_id": block.id, "content": output}
-            )
+                # tool_use_id 必须与请求一一对应，模型据此匹配结果
+                results.append(
+                    {"type": "tool_result", "tool_use_id": block.id, "content": output}
+                )
         else:
+            user_content = list(results)
+            bg_notifications = collect_background_results()
+            if bg_notifications:
+                for notif in bg_notifications:
+                    user_content.append({"type": "text", "text": notif})
+                print(
+                    f"  \033[32m[inject] {len(bg_notifications)} background "
+                    f"notification(s)\033[0m"
+                )
+
             # for...else：未被 break 中断 → 所有 tool_use 都执行完毕
             # 将收集到的 tool_result 以 user 角色回填，进入下一轮循环
-            messages.append({"role": "user", "content": results})
+            messages.append({"role": "user", "content": user_content})
 
             session_context = context.update_session_context(session_context, messages)
             system = system_prompt.get_system_prompt(session_context)
@@ -264,7 +348,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
 
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s11: Error Recovery")
+    print("s13: Background Tasks")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
@@ -272,14 +356,14 @@ def main() -> None:
 
     while True:
         try:
-            query = input("\033[36ms11 >> \033[0m")
+            query = input("\033[36ms13 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s11: 会话记录等）
+        # 通知 hooks 用户已提交输入（s13: 会话记录等）
         hooks.trigger_hooks("UserPromptSubmit", query)
 
         turn_start = len(history_messages)

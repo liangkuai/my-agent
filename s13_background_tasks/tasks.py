@@ -36,6 +36,7 @@ class Task:
         owner: 认领该任务的 agent 名称，未认领时为 None
         blockedBy: 前置依赖任务 ID 列表，全部完成后本任务才能认领
     """
+
     id: str
     subject: str
     description: str
@@ -191,3 +192,29 @@ def complete_task(task_id: str) -> str:
         msg += f"\nUnblocked: {', '.join(unblocked)}"
         print(f"  \033[33m[unblocked] {', '.join(unblocked)}\033[0m")
     return msg
+
+
+def should_run_background(tool_name: str, tool_input: dict) -> bool:
+    if tool_input.get("run_in_background"):
+        return True
+    return is_slow_operation(tool_name, tool_input)
+
+
+def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
+    if tool_name != "bash":
+        return False
+    cmd = tool_input.get("command", "").lower()
+    slow_keywords = [
+        "install",
+        "build",
+        "test",
+        "deploy",
+        "compile",
+        "docker build",
+        "pip install",
+        "npm install",
+        "cargo build",
+        "pytest",
+        "make",
+    ]
+    return any(kw in cmd for kw in slow_keywords)
