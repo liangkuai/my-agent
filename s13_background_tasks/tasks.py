@@ -195,12 +195,48 @@ def complete_task(task_id: str) -> str:
 
 
 def should_run_background(tool_name: str, tool_input: dict) -> bool:
+    """判断工具调用是否应派发到后台线程异步执行。
+
+    两个条件任一满足即返回 True：
+    1. run_in_background 参数显式为 True —— 模型主动声明
+    2. is_slow_operation() 判定命中 —— 命令含 install/build/test 等关键词
+
+    由 app.agent_loop 在工具执行阶段调用。返回 True 时通过
+    start_background_task() 启动 daemon 线程执行；返回 False 时同步执行。
+
+    Args:
+        tool_name: 工具名（如 "bash"）。
+        tool_input: 模型传入的参数字典。
+
+    Returns:
+        True 表示应后台执行，False 表示同步执行。
+    """
     if tool_input.get("run_in_background"):
         return True
     return is_slow_operation(tool_name, tool_input)
 
 
 def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
+    """基于命令关键词判断是否为耗时 shell 操作。
+
+    仅对 bash 工具做子串匹配，命中以下任一关键词即视为耗时操作：
+
+    - 包管理：pip install, npm install, cargo build
+    - 构建：make, docker build, compile
+    - 测试：pytest, test
+    - 部署：deploy
+    - 通用：install, build
+
+    子串匹配可能误判（如 echo "install"），但误判代价仅是额外启动一个
+    后台线程，不影响正确性。非 bash 工具始终返回 False。
+
+    Args:
+        tool_name: 工具名。
+        tool_input: 模型传入的参数字典。
+
+    Returns:
+        True 表示包含耗时关键词；非 bash 工具始终返回 False。
+    """
     if tool_name != "bash":
         return False
     cmd = tool_input.get("command", "").lower()

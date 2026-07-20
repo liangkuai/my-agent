@@ -329,9 +329,18 @@ def load_skill(name: str) -> str:
 def run_create_task(
     subject: str, description: str = "", blockedBy: list[str] | None = None
 ) -> str:
-    """创建新任务并持久化到磁盘，向终端打印蓝色创建提示。
+    """创建新任务并持久化到 .tasks/{id}.json，向终端打印蓝色创建提示。
 
-    参数透传至 tasks.create_task()，blockedBy 为空时省略依赖标注。
+    参数直接转发至 tasks.create_task()，由后者生成唯一 ID、写入磁盘。
+    blockedBy 声明前置依赖——所列任务全部完成后本任务才能被认领。
+
+    Args:
+        subject: 任务标题（必填）。
+        description: 详细描述（可选）。
+        blockedBy: 前置依赖任务 ID 列表（可选）。
+
+    Returns:
+        创建确认字符串，如 "Created task_xxx: 标题 (blockedBy: t1, t2)"。
     """
     task = tasks.create_task(subject, description, blockedBy)
     deps = f" (blockedBy: {', '.join(blockedBy)})" if blockedBy else ""
@@ -342,8 +351,11 @@ def run_create_task(
 def run_list_tasks() -> str:
     """列出所有任务，以 Unicode 图标区分状态，空列表时返回友好提示。
 
-    图标映射：○ pending  ● in_progress  ✓ completed
-    每条任务附带 ID、标题、状态、owner 和依赖信息。
+    每条任务显示：图标 ID 标题 [状态] [owner] (依赖)。图标含义：
+    ○ = pending  ● = in_progress  ✓ = completed
+
+    Returns:
+        多行字符串；无任务时返回 "No tasks. Use create_task to add some."。
     """
     all_tasks = tasks.list_tasks()
     if not all_tasks:
@@ -358,9 +370,16 @@ def run_list_tasks() -> str:
 
 
 def run_get_task(task_id: str) -> str:
-    """获取单条任务的 JSON 详情；文件不存在时返回 \"Error: ...\" 而非抛异常。
+    """获取单条任务的 JSON 格式详情。
 
-    与其余工具函数的错误处理约定一致：让模型读到错误并自行修正。
+    tasks.get_task() 内部将 Task 对象序列化为缩进 JSON 字符串，
+    本函数仅额外捕获 FileNotFoundError，将异常转为 "Error: ..." 字符串。
+
+    Args:
+        task_id: 任务唯一标识（如 "task_1699999999_0001"）。
+
+    Returns:
+        格式化 JSON 字符串，或 "Error: Task {id} not found"。
     """
     try:
         return tasks.get_task(task_id)
@@ -369,18 +388,37 @@ def run_get_task(task_id: str) -> str:
 
 
 def run_claim_task(task_id: str) -> str:
-    """认领任务（pending → in_progress），owner 固定为 \"agent\"。
+    """认领 pending 任务，将其状态切换为 in_progress，owner 固定为 "agent"。
 
-    底层 tasks.claim_task() 会校验状态和依赖，失败时返回具体原因。
+    底层 tasks.claim_task() 会校验：
+    1. 任务当前状态必须为 "pending"
+    2. 所有 blockedBy 依赖必须已满足（依赖任务状态为 completed）
+
+    任一条件不满足时返回具体原因字符串，让模型自行调整。
+
+    Args:
+        task_id: 要认领的任务 ID。
+
+    Returns:
+        成功确认消息或失败原因字符串。
     """
     return tasks.claim_task(task_id, owner="agent")
 
 
 def run_complete_task(task_id: str) -> str:
-    """完成任务（in_progress → completed），自动报告解除阻塞的下游任务。
+    """完成任务（in_progress → completed），自动报告被解除阻塞的下游任务。
 
-    底层 tasks.complete_task() 会扫描所有 pending 任务，
-    找出因本任务完成而满足 can_start 条件的下游任务并列出。
+    底层 tasks.complete_task() 会：
+    1. 校验任务状态为 "in_progress"
+    2. 切换状态为 "completed" 并保存
+    3. 扫描所有 pending 任务，找出因本任务完成而 can_start 的下游任务
+    4. 返回确认消息时附带解除阻塞的下游任务列表
+
+    Args:
+        task_id: 要完成的任务 ID。
+
+    Returns:
+        成功确认消息（含解除阻塞的下游任务列表）或失败原因字符串。
     """
     return tasks.complete_task(task_id)
 

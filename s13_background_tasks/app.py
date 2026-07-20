@@ -46,20 +46,53 @@ import threading
 rounds_since_todo = 0
 
 
+# === 后台任务系统 ===
+# 将耗时 shell 命令（install/build/test 等）派发到后台线程执行，主 agent
+# 循环不阻塞。任务完成后以 <task_notification> XML 片段注入下一轮对话。
+#
+# 数据流：
+#   模型调用 bash(run_in_background=True) → tasks.should_run_background 判定为 true
+#   → start_background_task 启动 daemon 线程 → 立即返回占位 tool_result
+#   → 后续轮次 collect_background_results 收集完成的通知 → 注入对话
+#
+# 三个模块级变量 + 一把锁：
+#   _bg_counter        — 自增计数器，生成唯一 bg_id（bg_0001, bg_0002, ...）
+#   background_tasks   — bg_id → {tool_use_id, command, status} 任务元数据
+#   background_results — bg_id → output 字符串，worker 线程写入的输出内容
+#   background_lock    — 保护上述两个字典的 threading.Lock
+
 _bg_counter = 0
-background_tasks: dict[str, dict] = {}  # bg_id → {tool_use_id, command, status}
-background_results: dict[str, str] = {}  # bg_id → output
+background_tasks: dict[str, dict] = {}
+background_results: dict[str, str] = {}
 background_lock = threading.Lock()
 
 
 def start_background_task(block: Any) -> str:
+    """将耗时工具调用（如 install/build/test）派发到后台线程异步执行。
+
+    主循环不等待后台任务完成——立即返回占位 tool_result 告知模型"已派发"，
+    任务完成后由 collect_background_results() 将结果注入下一轮对话。
+
+    1. 分配全局唯一 bg_id（格式 bg_0001）
+    2. 持锁注册任务状态为 "running"
+    3. 启动 daemon 线程执行 worker()，结果写入 background_results
+    4. 立即返回 bg_id，主循环继续
+
+    Args:
+        block: 模型请求的 tool_use 内容块，需具备 .id、.name、.input 属性。
+
+    Returns:
+        后台任务 ID 字符串（如 "bg_0001"）。
+    """
     global _bg_counter
     _bg_counter += 1
     bg_id = f"bg_{_bg_counter:04d}"
     cmd = block.input.get("command", block.name)
 
     def worker():
+        """后台执行体：调用工具，将结果写入共享字典。"""
         result = tools.use_tool(block.name, block.input)
+        # 持锁写入两个共享字典，确保与 collect_background_results 的 pop 操作互斥
         with background_lock:
             background_tasks[bg_id]["status"] = "completed"
             background_results[bg_id] = result
@@ -77,6 +110,21 @@ def start_background_task(block: Any) -> str:
 
 
 def collect_background_results() -> list[str]:
+    """收集已完成后台任务的结果，生成 <task_notification> XML 片段。
+
+    在 agent_loop 工具执行阶段末尾调用，若无已完成任务则返回空列表。
+
+    1. 持锁扫描 background_tasks，收集所有 status == "completed" 的任务 ID
+    2. 逐任务持锁 pop 元数据与结果（pop 后从字典移除，防止重复注入）
+    3. 截取前 200 字符作为摘要，包装为 <task_notification> XML
+    4. 打印绿色终端提示
+
+    线程安全策略：先持锁收集 ID 列表后释放，再逐任务持锁 pop——
+    最小化单次持锁时间，避免阻塞 worker 线程写入。
+
+    Returns:
+        <task_notification> XML 字符串列表，以 text 块追加到 user 消息中。
+    """
     with background_lock:
         ready_ids = [
             bid
@@ -302,6 +350,10 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 )
                 continue
 
+            # === 后台任务判断：should_run_background ===
+            # 两个条件任一满足即派发到后台：
+            # 1. run_in_background=True：模型显式声明（如 bash 工具的参数）
+            # 2. is_slow_operation 命中：命令包含 install/build/test 等耗时关键词
             if tasks.should_run_background(block.name, block.input):
                 bg_id = start_background_task(block)
                 results.append(
@@ -329,6 +381,10 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 )
         else:
             user_content = list(results)
+            # === 后台任务结果注入 ===
+            # 工具执行阶段的最后一步：收集已完成后台任务的结果，
+            # 以 text 块形式追加到 user 消息中。模型在下一轮迭代中
+            # 将这些 <task_notification> 当作系统通知来解析。
             bg_notifications = collect_background_results()
             if bg_notifications:
                 for notif in bg_notifications:
