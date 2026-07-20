@@ -329,6 +329,10 @@ def load_skill(name: str) -> str:
 def run_create_task(
     subject: str, description: str = "", blockedBy: list[str] | None = None
 ) -> str:
+    """创建新任务并持久化到磁盘，向终端打印蓝色创建提示。
+
+    参数透传至 tasks.create_task()，blockedBy 为空时省略依赖标注。
+    """
     task = tasks.create_task(subject, description, blockedBy)
     deps = f" (blockedBy: {', '.join(blockedBy)})" if blockedBy else ""
     print(f"  \033[34m[create] {task.subject}{deps}\033[0m")
@@ -336,6 +340,11 @@ def run_create_task(
 
 
 def run_list_tasks() -> str:
+    """列出所有任务，以 Unicode 图标区分状态，空列表时返回友好提示。
+
+    图标映射：○ pending  ● in_progress  ✓ completed
+    每条任务附带 ID、标题、状态、owner 和依赖信息。
+    """
     all_tasks = tasks.list_tasks()
     if not all_tasks:
         return "No tasks. Use create_task to add some."
@@ -349,6 +358,10 @@ def run_list_tasks() -> str:
 
 
 def run_get_task(task_id: str) -> str:
+    """获取单条任务的 JSON 详情；文件不存在时返回 \"Error: ...\" 而非抛异常。
+
+    与其余工具函数的错误处理约定一致：让模型读到错误并自行修正。
+    """
     try:
         return tasks.get_task(task_id)
     except FileNotFoundError:
@@ -356,17 +369,26 @@ def run_get_task(task_id: str) -> str:
 
 
 def run_claim_task(task_id: str) -> str:
+    """认领任务（pending → in_progress），owner 固定为 \"agent\"。
+
+    底层 tasks.claim_task() 会校验状态和依赖，失败时返回具体原因。
+    """
     return tasks.claim_task(task_id, owner="agent")
 
 
 def run_complete_task(task_id: str) -> str:
+    """完成任务（in_progress → completed），自动报告解除阻塞的下游任务。
+
+    底层 tasks.complete_task() 会扫描所有 pending 任务，
+    找出因本任务完成而满足 can_start 条件的下游任务并列出。
+    """
     return tasks.complete_task(task_id)
 
 
 # =============================================================================
 #  工具定义：声明每个工具的名称、描述和参数 schema（Anthropic Tool Use 格式）。
-#  TOOLS        → 提供给主 agent，包含全部 9 个工具。
-#  SUB_TOOLS    → 提供给子 agent，仅含 5 个基础文件/shell 工具（不含 todo_write 和 task）。
+#  TOOLS        → 提供给主 agent，包含全部 14 个工具。
+#  SUB_TOOLS    → 提供给子 agent，仅含 5 个基础文件/shell 工具（不含 todo_write、task 等）。
 #  TOOL_HANDLERS / SUB_TOOL_HANDLERS → 把工具名映射到对应的 Python 函数。
 # =============================================================================
 

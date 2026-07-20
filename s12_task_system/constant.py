@@ -126,4 +126,6 @@ BASE_DELAY_MS = 500
 MAX_CONSECUTIVE_529 = 3
 
 
+# 任务持久化目录。每个任务一个 {task_id}.json 文件，由 tasks.py 管理读写。
+# 目录由 save_task() 按需创建（而非导入时），避免测试/脚本导入的副作用。
 TASKS_DIR = WORKDIR / ".tasks"
