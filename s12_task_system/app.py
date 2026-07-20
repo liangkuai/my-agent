@@ -1,5 +1,5 @@
 """
-s11 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
+s12 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
 
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
