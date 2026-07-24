@@ -41,8 +41,8 @@ class Task:
     subject: str
     description: str
     status: str  # pending | in_progress | completed
-    owner: str | None  # Agent name (multi-agent scenarios)
-    blockedBy: list[str]  # Dependency task IDs
+    owner: str | None  # Agent 名（多 Agent 场景）
+    blockedBy: list[str]  # 依赖的任务 ID 列表
 
 
 def _task_path(task_id: str) -> Path:

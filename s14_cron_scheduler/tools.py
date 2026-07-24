@@ -2,7 +2,8 @@
 Agent 可用的工具函数注册表。
 
 本模块定义了主 agent 和子 agent 共用的全部工具：shell 执行、文件读写、
-编辑、glob 搜索、todo 管理、skill 加载、对话压缩，以及子 agent 的 spawn 与工具回填循环。
+编辑、glob 搜索、todo 管理、task 管理、cron 调度、skill 加载、对话压缩，
+以及子 agent 的 spawn 与工具回填循环。
 
 核心设计原则：
 1. 所有工具函数都不抛异常——错误以 "Error: ..." 字符串返回给模型，
@@ -10,7 +11,8 @@ Agent 可用的工具函数注册表。
 2. 路径安全：safe_path() 是所有文件类工具的统一入口，通过 resolve + is_relative_to
    双重校验防止目录穿越。
 3. 主/子 agent 共享 handler（run_bash / run_read / run_write / run_edit / run_glob），
-   但工具声明分开——主 agent 额外拥有 todo_write、task、load_skill、compact。
+   但工具声明分开——主 agent 额外拥有 todo_write、task、load_skill、compact、
+   create_task / list_tasks / get_task / claim_task / complete_task、schedule_cron / list_crons / cancel_cron。
 """
 
 import subprocess
@@ -23,6 +25,7 @@ from llm_client import client
 import skills
 import hooks
 import tasks
+import jobs
 
 
 def run_bash(command: str, run_in_background: bool = False) -> str:
@@ -423,9 +426,65 @@ def run_complete_task(task_id: str) -> str:
     return tasks.complete_task(task_id)
 
 
+def run_schedule_cron(
+    cron: str, prompt: str, recurring: bool = True, durable: bool = True
+) -> str:
+    """注册一个新的 cron 定时任务。
+
+    参数直接转发至 jobs.schedule_job() 完成校验、注册和持久化，
+    本函数仅负责将 CronJob 返回值格式化为面向模型的确认字符串，
+    或将校验错误包装为 "Error: ..." 前缀。
+
+    Args:
+        cron: 五段式 cron 表达式（"分 时 日 月 周"）。
+        prompt: 触发时以 "[Scheduled] {prompt}" 格式注入对话的消息文本。
+        recurring: True=周期性重复；False=一次性（首次触发后自动移除）。
+        durable: True=持久化到 .scheduled_tasks.json，跨会话保留。
+    """
+    result = jobs.schedule_job(cron, prompt, recurring, durable)
+    if isinstance(result, str):
+        return f"Error: {result}"
+    return f"Scheduled {result.id}: '{cron}' → {prompt}"
+
+
+def run_list_crons() -> str:
+    """列出所有已注册的 cron 任务，以可读格式展示。
+
+    每条任务显示：ID、cron 表达式、prompt 前缀（截断40字符）、
+    类型标签（recurring/one-shot）和持久化标签（durable/session）。
+
+    Returns:
+        多行字符串；无任务时返回友好提示。
+    """
+    with jobs.cron_lock:
+        cron_jobs = list(jobs.scheduled_jobs.values())
+    if not cron_jobs:
+        return "No cron jobs. Use schedule_cron to add one."
+    lines = []
+    for j in cron_jobs:
+        tag = "recurring" if j.recurring else "one-shot"
+        dur = "durable" if j.durable else "session"
+        lines.append(f"  {j.id}: '{j.cron}' → {j.prompt[:40]} [{tag}, {dur}]")
+    return "\n".join(lines)
+
+
+def run_cancel_cron(job_id: str) -> str:
+    """按 ID 取消一个已注册的 cron 任务。
+
+    将结果直接转发自 jobs.cancel_job()，后者负责内存移除和磁盘同步。
+
+    Args:
+        job_id: 任务唯一标识（如 "cron_004227"）。
+
+    Returns:
+        成功确认消息或 "Job {id} not found"。
+    """
+    return jobs.cancel_job(job_id)
+
+
 # =============================================================================
 #  工具定义：声明每个工具的名称、描述和参数 schema（Anthropic Tool Use 格式）。
-#  TOOLS        → 提供给主 agent，包含全部 14 个工具。
+#  TOOLS        → 提供给主 agent，包含全部 17 个工具。
 #  SUB_TOOLS    → 提供给子 agent，仅含 5 个基础文件/shell 工具（不含 todo_write、task 等）。
 #  TOOL_HANDLERS / SUB_TOOL_HANDLERS → 把工具名映射到对应的 Python 函数。
 # =============================================================================
@@ -575,6 +634,40 @@ TOOLS = [
             "required": ["task_id"],
         },
     },
+    {
+        "name": "schedule_cron",
+        "description": "Schedule a cron job. cron is 5-field: min hour dom month dow.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "cron": {"type": "string", "description": "5-field cron expression"},
+                "prompt": {
+                    "type": "string",
+                    "description": "Message to inject when fired",
+                },
+                "recurring": {
+                    "type": "boolean",
+                    "description": "True=recurring, False=one-shot",
+                },
+                "durable": {"type": "boolean", "description": "True=persist to disk"},
+            },
+            "required": ["cron", "prompt"],
+        },
+    },
+    {
+        "name": "list_crons",
+        "description": "List all registered cron jobs.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "cancel_cron",
+        "description": "Cancel a cron job by ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+        },
+    },
 ]
 
 
@@ -593,6 +686,9 @@ TOOL_HANDLERS = {
     "get_task": run_get_task,
     "claim_task": run_claim_task,
     "complete_task": run_complete_task,
+    "schedule_cron": run_schedule_cron,
+    "list_crons": run_list_crons,
+    "cancel_cron": run_cancel_cron,
 }
 
 

@@ -1,8 +1,9 @@
 """
-s12 任务管理系统 —— 文件级别的任务持久化与依赖追踪。
+任务管理系统 —— 文件级别的任务持久化与依赖追踪。
 
 以 JSON 文件为存储后端，提供任务的完整生命周期管理
 （创建、列出、认领、完成）和基于 blockedBy 的依赖关系追踪。
+同时包含后台任务调度判断逻辑（should_run_background / is_slow_operation）。
 
 每条任务对应 .tasks/ 下一个 {task_id}.json 文件，
 ID 格式为 task_{timestamp}_{random}，单机环境下保证唯一。
@@ -41,8 +42,8 @@ class Task:
     subject: str
     description: str
     status: str  # pending | in_progress | completed
-    owner: str | None  # Agent name (multi-agent scenarios)
-    blockedBy: list[str]  # Dependency task IDs
+    owner: str | None  # Agent 名（多 Agent 场景）
+    blockedBy: list[str]  # 依赖的任务 ID 列表
 
 
 def _task_path(task_id: str) -> Path:

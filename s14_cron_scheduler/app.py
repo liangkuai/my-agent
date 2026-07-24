@@ -1,10 +1,14 @@
 """
-s13 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Agent REPL 应用。
+s14 Cron Scheduler —— 带定时任务调度、上下文压缩与工具调用循环的编码 Agent REPL 应用。
+
+本模块是 s14 章节的入口，在 s13 的 Agent REPL 基础上新增 cron 定时任务调度能力：
+模型可通过 schedule_cron / list_crons / cancel_cron 工具管理定时任务，
+后台线程每秒轮询匹配的 cron 表达式，到期的 prompt 自动注入对话。
 
 架构概览：
   main()        → REPL 循环，读取用户输入，调用 agent_loop，打印模型回复
-  agent_loop()  → 核心循环：压缩 → 调用 LLM → 执行工具 → 回填结果，直到模型停止请求工具
-  system_prompt.get_system_prompt()→ 构建 system prompt（模板片段 + context 拼接，带缓存）
+  agent_loop()  → 核心循环：消费 cron_queue → 压缩 → 调用 LLM → 执行工具 → 回填结果
+  queue_processor_loop() → 后台线程，非阻塞轮询 cron_queue 并派发到 agent_loop
 
 上下文压缩管线（每轮 agent_loop 开始时依次执行）：
   tool_result_budget → 单轮 tool_result 总大小超限时，持久化最大的结果到磁盘
@@ -12,6 +16,10 @@ s13 System Prompt —— 带上下文压缩与动态 system prompt 的编码 Age
   micro_compact      → 压缩早期 tool_result 内容为占位文本
   若仍超 CONTEXT_LIMIT → compact_history（LLM 摘要完全替代历史）
   若 API 报 prompt_too_long → reactive_compact（保留尾部 + LLM 摘要）
+
+后台任务系统：
+  耗时 shell 命令（install/build/test 等）可派发到 daemon 线程异步执行，
+  完成后以 <task_notification> 片段注入下一轮对话。
 """
 
 try:
@@ -25,6 +33,8 @@ try:
 except ImportError:
     pass
 
+import threading
+import time
 from typing import Any
 
 import config
@@ -37,7 +47,7 @@ import context
 import memory
 import recovery
 import tasks
-import threading
+import jobs
 
 
 # 自上次 todo_write 调用以来已完成的 round 数。
@@ -93,7 +103,7 @@ def start_background_task(block: Any) -> str:
         """后台执行体：调用工具，将结果写入共享字典。
 
         用 try/except 包裹 tools.use_tool()，防止工具调用抛出未预期的异常
-        （如 TypeError、OSError 等非 "Error: ..." 字符串能覆盖的错误）导致
+        （如 TypeError、OSError 等非 "Error: ..." 字符串所能覆盖的错误）导致
         worker 静默死亡。异常时以 "Error: ..." 字符串写入结果，确保
         collect_background_results 总能收到完成通知，不会永久泄漏任务条目。
         """
@@ -162,7 +172,7 @@ def collect_background_results() -> list[str]:
     return notifications
 
 
-def agent_loop(messages: list, session_context: dict) -> None:
+def agent_loop(messages: list, session_context: dict) -> dict:
     """反复「调用模型 → 执行工具 → 回填结果」，直到模型不再请求工具为止。
 
     每轮检查是否需要注入 todo 提醒；退出前触发 Stop hook，允许外部注入
@@ -186,6 +196,11 @@ def agent_loop(messages: list, session_context: dict) -> None:
     system = system_prompt.get_system_prompt(session_context)
 
     while True:
+        fired = jobs.consume_cron_queue()
+        for job in fired:
+            messages.append({"role": "user", "content": f"[Scheduled] {job.prompt}"})
+            print(f"  \033[35m[inject cron] {job.prompt[:50]}\033[0m")
+
         # 在压缩前拍一份消息历史快照（统一转换为纯 dict 形式）。
         # 压缩管线（tool_result_budget / snip / micro / compact_history）会
         # 修改 messages 中的 block 内容或裁切消息，而 extract_memories 需要
@@ -265,7 +280,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
                         ],
                     }
                 )
-                return
+                return session_context
 
             name = type(e).__name__
             print(f"  \033[31m[unrecoverable] {name}: {str(e)[:100]}\033[0m")
@@ -277,7 +292,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
                     ],
                 }
             )
-            return
+            return session_context
 
         if response.stop_reason == "max_tokens":
             if not state.has_escalated:
@@ -300,7 +315,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 )
                 continue
             print("  \033[31m[max_tokens] recovery limit reached\033[0m")
-            return
+            return session_context
 
         # 把模型本轮回复（可能含文本和 tool_use 块）原样追加进历史
         messages.append({"role": "assistant", "content": response.content})
@@ -316,7 +331,7 @@ def agent_loop(messages: list, session_context: dict) -> None:
                 continue
             memory.extract_memories(pre_compress)
             memory.consolidate_memories()
-            return
+            return session_context
 
         # 仅在 tool_use 轮次递增计数器。文本回复轮次（模型给出最终答案）
         # 不需要提醒——提醒只针对模型陷入一连串工具调用却忘记更新任务列表的场景。
@@ -412,46 +427,117 @@ def agent_loop(messages: list, session_context: dict) -> None:
             system = system_prompt.get_system_prompt(session_context)
 
 
+def print_latest_assistant_text(history_messages: list) -> None:
+    """打印对话历史中最后一条 assistant 消息的文本内容。
+
+    兼容两种 content 格式：纯字符串（旧版或简化场景）和 ContentBlock 列表
+    （SDK 返回的富对象，需从中过滤 type=="text" 的块）。
+    无消息或最后一条非 assistant 角色时静默返回。
+    """
+    if not history_messages:
+        return
+    msg = history_messages[-1]
+    if not isinstance(msg, dict) or msg.get("role") != "assistant":
+        return
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        print(content)
+        return
+    for block in content:
+        if getattr(block, "type", None) == "text":
+            print(block.text)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            print(block.get("text", ""))
+
+
+def run_agent_turn_locked(
+    history_messages: list, session_context: dict, user_query: str | None = None
+) -> None:
+    if user_query is not None:
+        # 通知 hooks 用户已提交输入（s14: 会话记录等）
+        hooks.trigger_hooks("UserPromptSubmit", user_query)
+
+        history_messages.append({"role": "user", "content": user_query})
+
+    session_context = agent_loop(history_messages, session_context)
+    session_context = context.update_session_context(session_context, history_messages)
+    print_latest_assistant_text(history_messages)
+    print()
+
+
+def queue_processor_loop(history_messages: list, session_context: dict) -> None:
+    """后台线程：非阻塞轮询 cron_queue，有任务时获取 agent_lock 并派发。
+
+    每 200ms 检查一次，空队列或无空闲锁时立即重试。双重检查 has_cron_queue
+    （获取锁前后各一次）避免在等锁期间队列被消费后空跑一轮 agent_loop。
+    """
+    while True:
+        time.sleep(0.2)
+        if not jobs.has_cron_queue():
+            continue
+        if not agent_lock.acquire(blocking=False):
+            continue
+        try:
+            if not jobs.has_cron_queue():
+                continue
+            print("\n  \033[35m[queue processor] delivering scheduled work\033[0m")
+            run_agent_turn_locked(history_messages, session_context)
+        finally:
+            agent_lock.release()
+
+
+agent_lock = threading.Lock()
+
+
 def main() -> None:
     """REPL 入口：循环读取用户输入，交给 agent_loop 处理，打印模型最终回复。"""
-    print("s13: Background Tasks")
+    print("s14: Cron Scheduler")
     print("输入问题，回车发送。输入 q 退出。\n")
 
     history_messages = []
     session_context = context.update_session_context({}, history_messages)
 
+    threading.Thread(
+        target=queue_processor_loop,
+        args=(history_messages, session_context),
+        daemon=True,
+    ).start()
+
     while True:
         try:
-            query = input("\033[36ms13 >> \033[0m")
+            query = input("\033[36ms14 >> \033[0m")
         except (EOFError, KeyboardInterrupt):
             break
 
         if query.strip().lower() in ("q", "exit", "quit", ""):
             break
 
-        # 通知 hooks 用户已提交输入（s13: 会话记录等）
-        hooks.trigger_hooks("UserPromptSubmit", query)
+        with agent_lock:
+            run_agent_turn_locked(history_messages, session_context, query)
 
-        turn_start = len(history_messages)
+        # 通知 hooks 用户已提交输入（s14: 会话记录等）
+        # hooks.trigger_hooks("UserPromptSubmit", query)
 
-        history_messages.append({"role": "user", "content": query})
-        agent_loop(history_messages, session_context)
-        session_context = context.update_session_context(
-            session_context, history_messages
-        )
+        # turn_start = len(history_messages)
+
+        # history_messages.append({"role": "user", "content": query})
+        # agent_loop(history_messages, session_context)
+        # session_context = context.update_session_context(
+        #     session_context, history_messages
+        # )
 
         # agent_loop 结束后，末尾必为 assistant 消息。
         # content 为内容块列表时只挑文本块展示（工具调用块由 run_todo_write 等函数
         # 内置的 print 在终端直接渲染）。
-        for msg in history_messages[turn_start:]:
-            if msg.get("role") != "assistant":
-                continue
-            for block in msg["content"]:
-                if getattr(block, "type", None) == "text":
-                    print(block.text)
-                elif isinstance(block, dict) and block.get("type") == "text":
-                    print(block.get("text", ""))
-        print()
+        # for msg in history_messages[turn_start:]:
+        #     if msg.get("role") != "assistant":
+        #         continue
+        #     for block in msg["content"]:
+        #         if getattr(block, "type", None) == "text":
+        #             print(block.text)
+        #         elif isinstance(block, dict) and block.get("type") == "text":
+        #             print(block.get("text", ""))
+        # print()
 
 
 if __name__ == "__main__":
